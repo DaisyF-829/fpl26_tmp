@@ -182,10 +182,8 @@ class HeteroGraph {
     std::vector<TileEdge*>   tile_edges_;
     std::unordered_map<RRNodeId, RRTileEdge*> rr_id_to_rrt_edge_map_;
 
-    std::vector<std::vector<float>> chanx_util_map;
-    std::vector<std::vector<float>> chany_util_map;
-    size_t                          grid_w = 0;
-    size_t                          grid_h = 0;
+    size_t grid_w = 0;
+    size_t grid_h = 0;
 
     std::vector<std::vector<int>> top_path_node_indices;
     std::vector<float>            top_path_delays;
@@ -193,8 +191,7 @@ class HeteroGraph {
 
     std::vector<std::pair<tatum::NodeId, size_t>> pruned_tnode_rr_edges_;
 
-    float  critical_path_delay = 0.0f;
-    size_t final_chan_width    = 0;
+    float critical_path_delay = 0.0f;
 
     bool get_block_loc(tatum::NodeId node_id, int& x, int& y) const;
     bool get_net_hpwl_fanout(ParentNetId net_id, float& hpwl, int& fanout) const;
@@ -204,8 +201,6 @@ class HeteroGraph {
     void initialize_tile_map();
     void prune_rr_graph();
     void update_pruned_tnode_rr_edges();
-
-    void build_channel_util_map();
 };
 
 } // namespace tgnn

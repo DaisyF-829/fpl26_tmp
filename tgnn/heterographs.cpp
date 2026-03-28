@@ -764,84 +764,38 @@ void HeteroGraph::extract_node_features()
         if (it_dst != tnode_ptr_map.end()) it_dst->second->fanin++;
     }
 
-    // ---- 3. Topological level (longest path from fanin-0 sources) ----
-    for (Tnode* t : tnode_nodes)
-        t->topo_level = -1;
-    for (Tnode* t : tnode_nodes) {
-        if (t->fanin == 0)
-            t->topo_level = 0;
+    // ---- 3. Topological level (longest path from fanin-0 sources), BFS O(N+E) ----
+    const size_t N_nodes = tnode_nodes.size();
+    std::vector<std::vector<size_t>> fwd(N_nodes);
+    for (const TEdge* e : tnode_edges) {
+        auto it_src = tnode_id_map.find(e->src_tnode);
+        auto it_dst = tnode_id_map.find(e->dst_tnode);
+        if (it_src != tnode_id_map.end() && it_dst != tnode_id_map.end())
+            fwd[it_src->second].push_back(it_dst->second);
     }
-    const int max_iter = std::max((int)tnode_nodes.size(), 1);
-    for (int it = 0; it < max_iter; ++it) {
-        bool changed = false;
-        for (const TEdge* e : tnode_edges) {
-            auto it_s = tnode_ptr_map.find(e->src_tnode);
-            auto it_d = tnode_ptr_map.find(e->dst_tnode);
-            if (it_s == tnode_ptr_map.end() || it_d == tnode_ptr_map.end()) continue;
-            Tnode* s = it_s->second;
-            Tnode* d = it_d->second;
-            if (s->topo_level < 0) continue;
-            int nl = s->topo_level + 1;
-            if (d->topo_level < nl) {
-                d->topo_level = nl;
-                changed       = true;
+    std::vector<int> level(N_nodes, -1);
+    std::queue<size_t> bfs_q;
+    for (size_t i = 0; i < N_nodes; ++i) {
+        if (tnode_nodes[i]->fanin == 0) {
+            level[i] = 0;
+            bfs_q.push(i);
+        }
+    }
+    while (!bfs_q.empty()) {
+        size_t cur = bfs_q.front();
+        bfs_q.pop();
+        for (size_t nbr : fwd[cur]) {
+            if (level[nbr] < level[cur] + 1) {
+                level[nbr] = level[cur] + 1;
+                bfs_q.push(nbr);
             }
         }
-        if (!changed) break;
     }
+    for (size_t i = 0; i < N_nodes; ++i)
+        tnode_nodes[i]->topo_level = level[i];
 
     std::cout << "[TGNN] extract_node_features: done for "
               << tnode_nodes.size() << " tnodes.\n";
-}
-
-// =============================================================================
-// Step 4 – build CHANX/CHANY utilisation maps from router occupancy
-// =============================================================================
-void HeteroGraph::build_channel_util_map()
-{
-    const auto& device_ctx  = g_vpr_ctx.device();
-    const auto& routing_ctx = g_vpr_ctx.routing();
-    const auto& rr_graph    = device_ctx.rr_graph;
-
-    grid_w = device_ctx.grid.width();
-    grid_h = device_ctx.grid.height();
-
-    if (grid_w == 0 || grid_h == 0) {
-        grid_w = device_ctx.grid.width();
-        grid_h = device_ctx.grid.height();
-    }
-
-    chanx_util_map.assign(grid_w, std::vector<float>(grid_h, 0.0f));
-    chany_util_map.assign(grid_w, std::vector<float>(grid_h, 0.0f));
-
-    // Record channel width for metadata output
-    final_chan_width = (size_t)device_ctx.chan_width.x_max;
-
-    // Iterate all RR nodes and record max utilisation per grid cell
-    for (RRNodeId rr_id : rr_graph.nodes()) {
-        e_rr_type type = rr_graph.node_type(rr_id);
-        if (type != e_rr_type::CHANX && type != e_rr_type::CHANY) continue;
-
-        int cap = rr_graph.node_capacity(rr_id);
-        if (cap <= 0) continue;
-
-        int occ   = routing_ctx.rr_node_route_inf[rr_id].occ();
-        float util = (float)occ / (float)cap;
-
-        size_t xlow = (size_t)rr_graph.node_xlow(rr_id);
-        size_t ylow = (size_t)rr_graph.node_ylow(rr_id);
-
-        if (xlow >= grid_w || ylow >= grid_h) continue;
-
-        if (type == e_rr_type::CHANX) {
-            chanx_util_map[xlow][ylow] = std::max(chanx_util_map[xlow][ylow], util);
-        } else {
-            chany_util_map[xlow][ylow] = std::max(chany_util_map[xlow][ylow], util);
-        }
-    }
-
-    std::cout << "[TGNN] build_channel_util_map: grid " << grid_w << "x" << grid_h
-              << ", chan_width=" << final_chan_width << "\n";
 }
 
 // =============================================================================
@@ -849,22 +803,22 @@ void HeteroGraph::build_channel_util_map()
 // =============================================================================
 void HeteroGraph::enrich_edge_features(NetPinsMatrix<float> net_delay)
 {
-    build_channel_util_map();
+    const auto& grid = g_vpr_ctx.device().grid;
+    const size_t gw  = grid.width();
+    const size_t gh  = grid.height();
 
     for (TEdge* edge : tnode_edges) {
-        if (!edge->has_net_delay) continue;   // only INTERCONNECT
+        if (!edge->has_net_delay) continue;
 
-        // ---- 5a. Fill actual net delay ----
+        // 6a. 实际 net delay（布线后真实延迟）
         edge->edge_delay = net_delay[edge->parent_net_id][edge->ipin] * 1.0e11f;
 
-        // ---- 5b. Endpoint positions (prefer block_locs over rrnode coords) ----
-        // Try tnode placement first; fall back to RR node coordinates
-        auto fill_pos = [&](tatum::NodeId tid, int& ox, int& oy,
-                            RRNode* fallback_rr) {
+        // 6b. 端点位置（优先用 block placement，fallback 用 RR node 坐标）
+        auto fill_pos = [&](tatum::NodeId tid, int& ox, int& oy, RRNode* rr) {
             if (get_block_loc(tid, ox, oy)) return;
-            if (fallback_rr) {
-                ox = (int)fallback_rr->xlow;
-                oy = (int)fallback_rr->ylow;
+            if (rr) {
+                ox = (int)rr->xlow;
+                oy = (int)rr->ylow;
             }
         };
         fill_pos(edge->src_tnode, edge->src_x, edge->src_y, edge->src_rrnode);
@@ -874,7 +828,7 @@ void HeteroGraph::enrich_edge_features(NetPinsMatrix<float> net_delay)
             edge->manhattan_dist = (float)(std::abs(edge->dst_x - edge->src_x) +
                                            std::abs(edge->dst_y - edge->src_y));
 
-        // ---- 5c. Net HPWL and fanout ----
+        // 6c. Net HPWL 和 fanout
         float hpwl = -1.0f;
         int   fo   = -1;
         if (get_net_hpwl_fanout(edge->parent_net_id, hpwl, fo)) {
@@ -882,40 +836,47 @@ void HeteroGraph::enrich_edge_features(NetPinsMatrix<float> net_delay)
             edge->net_fanout = fo;
         }
 
-        // ---- 5d. Channel utilisation along the bounding box of the edge ----
-        if (edge->src_x < 0 || edge->dst_x < 0) continue;
+        // 6d. Tile 密度：用 RR 端点的 bounding box 覆盖的 pruned tile 统计
+        RRNode* src_rr = edge->src_rrnode;
+        RRNode* dst_rr = edge->dst_rrnode;
+        if (!src_rr || !dst_rr) continue;
 
-        size_t xlo = (size_t)std::max(0, std::min(edge->src_x, edge->dst_x));
-        size_t xhi = (size_t)std::min((int)grid_w - 1, std::max(edge->src_x, edge->dst_x));
-        size_t ylo = (size_t)std::max(0, std::min(edge->src_y, edge->dst_y));
-        size_t yhi = (size_t)std::min((int)grid_h - 1, std::max(edge->src_y, edge->dst_y));
+        size_t xlo = std::min({src_rr->xlow, src_rr->xhigh, dst_rr->xlow, dst_rr->xhigh});
+        size_t xhi = std::max({src_rr->xlow, src_rr->xhigh, dst_rr->xlow, dst_rr->xhigh}) + 1;
+        size_t ylo = std::min({src_rr->ylow, src_rr->yhigh, dst_rr->ylow, dst_rr->yhigh});
+        size_t yhi = std::max({src_rr->ylow, src_rr->yhigh, dst_rr->ylow, dst_rr->yhigh}) + 1;
 
-        float max_cx = 0.0f, max_cy = 0.0f;
-        float sum_cx = 0.0f, sum_cy = 0.0f;
+        xlo = (xlo > 0) ? xlo - 1 : 0;
+        ylo = (ylo > 0) ? ylo - 1 : 0;
+        xhi = std::min(xhi, gw - 1);
+        yhi = std::min(yhi, gh - 1);
+
+        float max_ss = 0.0f, sum_ss = 0.0f;
+        float max_rr_d = 0.0f, sum_rr_d = 0.0f;
         size_t cnt = 0;
 
         for (size_t x = xlo; x <= xhi; ++x) {
             for (size_t y = ylo; y <= yhi; ++y) {
-                float cx = chanx_util_map[x][y];
-                float cy = chany_util_map[x][y];
-                max_cx = std::max(max_cx, cx);
-                max_cy = std::max(max_cy, cy);
-                sum_cx += cx;
-                sum_cy += cy;
+                auto it = tile_coord_to_id_.find({x, y});
+                if (it == tile_coord_to_id_.end()) continue;
+                const Tile* t = tiles_by_id_[it->second];
+                float ss      = (float)t->source_sink_count;
+                float rrd     = (float)t->rr_nodes.size();
+                max_ss          = std::max(max_ss, ss);
+                sum_ss          += ss;
+                max_rr_d        = std::max(max_rr_d, rrd);
+                sum_rr_d        += rrd;
                 ++cnt;
             }
         }
-
         if (cnt > 0) {
-            edge->path_max_chanx_util = max_cx;
-            edge->path_max_chany_util = max_cy;
-            edge->path_avg_chanx_util = sum_cx / (float)cnt;
-            edge->path_avg_chany_util = sum_cy / (float)cnt;
+            edge->path_max_chanx_util = max_ss;
+            edge->path_avg_chanx_util = sum_ss / (float)cnt;
+            edge->path_max_chany_util = max_rr_d;
+            edge->path_avg_chany_util = sum_rr_d / (float)cnt;
         }
     }
-
-    std::cout << "[TGNN] enrich_edge_features: done for "
-              << tnode_edges.size() << " tedges.\n";
+    std::cout << "[TGNN] enrich_edge_features: done.\n";
 }
 
 // =============================================================================
@@ -1017,9 +978,11 @@ void HeteroGraph::write_timing_graph_npz()
     }
 
     // ---- Global scalars ----
-    std::vector<size_t> scalar_grid_w      = {grid_w};
-    std::vector<size_t> scalar_grid_h      = {grid_h};
-    std::vector<size_t> scalar_chan_width   = {final_chan_width};
+    std::vector<size_t> scalar_grid_w    = {grid_w};
+    std::vector<size_t> scalar_grid_h    = {grid_h};
+    const auto&          chan_width      = g_vpr_ctx.device().chan_width;
+    const size_t         max_chan_width  = (size_t)std::max(chan_width.x_max, chan_width.y_max);
+    std::vector<size_t>  scalar_chan_width = {max_chan_width};
     std::vector<float>  scalar_cpd          = {critical_path_delay * 1.0e11f};
 
     // ---- Write npz ----
