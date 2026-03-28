@@ -59,10 +59,7 @@ def load_timing_graph(npz_path: str) -> Data:
     gh_denom = max(grid_h - 1, 1)
     grid_sum = float(grid_w + grid_h)
 
-    pl_time = arr(
-        "tnode_pl_time",
-        arr("tnode_pl_arrival", np.full(N, -1.0, dtype=np.float32)),
-    ).astype(np.float32)
+    pl_time = arr("tnode_pl_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32)
     pl_valid = arr("tnode_pl_arrival_mask", arr("tnode_pl_valid", np.zeros(N, dtype=np.int32)))
     pl_valid = pl_valid.astype(np.float32).reshape(-1)[:N]
 
@@ -150,10 +147,7 @@ def load_timing_graph(npz_path: str) -> Data:
     assert edge_attr_np.shape[1] == 12
 
     rt_time = arr("tnode_rt_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:N]
-    y_valid = arr(
-        "tnode_rt_valid",
-        arr("tnode_valid_mask", np.zeros(N, dtype=np.int32)),
-    ).astype(np.bool_).reshape(-1)[:N]
+    y_valid = arr("tnode_rt_valid", np.zeros(N, dtype=np.int32)).astype(np.bool_).reshape(-1)[:N]
     y_arrival = np.where(y_valid, rt_time / cpd, 0.0).astype(np.float32)
 
     top_paths = arr("top_path_node_ids")

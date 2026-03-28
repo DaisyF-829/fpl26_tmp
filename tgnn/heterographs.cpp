@@ -898,7 +898,7 @@ void HeteroGraph::write_timing_graph_npz()
     std::vector<float>  tnode_rt_time(N);
     std::vector<float>  tnode_rt_required(N);
     std::vector<float>  tnode_rt_slack(N);
-    std::vector<int>    tnode_valid_mask(N);
+    std::vector<int>    tnode_rt_valid(N);
     std::vector<int>    tnode_x(N), tnode_y(N);
     std::vector<int>    tnode_fanin(N), tnode_fanout(N);
     std::vector<float>  tnode_net_hpwl(N);
@@ -915,7 +915,7 @@ void HeteroGraph::write_timing_graph_npz()
         tnode_rt_required[i] = n->has_rt_required     ? n->rt_required_time * 1.0e11f : -1.0f;
         tnode_rt_slack[i]    = (n->has_rt_arrival_time && n->has_rt_required)
                                    ? n->rt_slack * 1.0e11f : -1.0f;
-        tnode_valid_mask[i]  = n->has_rt_arrival_time ? 1 : 0;
+        tnode_rt_valid[i]  = n->has_rt_arrival_time ? 1 : 0;
         tnode_x[i]           = n->blk_x;
         tnode_y[i]           = n->blk_y;
         tnode_fanin[i]       = n->fanin;
@@ -993,7 +993,7 @@ void HeteroGraph::write_timing_graph_npz()
     cnpy::npz_save(fname, "tnode_rt_time",         tnode_rt_time.data(),     {N}, "a");
     cnpy::npz_save(fname, "tnode_rt_required",     tnode_rt_required.data(), {N}, "a");
     cnpy::npz_save(fname, "tnode_rt_slack",        tnode_rt_slack.data(),    {N}, "a");
-    cnpy::npz_save(fname, "tnode_valid_mask",      tnode_valid_mask.data(),  {N}, "a");
+    cnpy::npz_save(fname, "tnode_rt_valid",        tnode_rt_valid.data(),    {N}, "a");
     cnpy::npz_save(fname, "tnode_on_critical_path",tnode_crit.data(),        {N}, "a");
     cnpy::npz_save(fname, "tnode_x",               tnode_x.data(),           {N}, "a");
     cnpy::npz_save(fname, "tnode_y",               tnode_y.data(),           {N}, "a");
@@ -1001,7 +1001,7 @@ void HeteroGraph::write_timing_graph_npz()
     cnpy::npz_save(fname, "tnode_fanout",          tnode_fanout.data(),      {N}, "a");
     cnpy::npz_save(fname, "tnode_net_hpwl",        tnode_net_hpwl.data(),    {N}, "a");
     cnpy::npz_save(fname, "tnode_net_fanout",      tnode_net_fanout.data(),  {N}, "a");
-    cnpy::npz_save(fname, "tnode_pl_arrival",      tnode_pl_arrival.data(),  {N}, "a");
+    cnpy::npz_save(fname, "tnode_pl_time",         tnode_pl_arrival.data(),  {N}, "a");
     cnpy::npz_save(fname, "tnode_pl_arrival_mask", tnode_pl_valid.data(),    {N}, "a");
     cnpy::npz_save(fname, "tnode_topo_level",      tnode_topo_level.data(),  {N}, "a");
 
