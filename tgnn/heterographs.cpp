@@ -24,18 +24,19 @@
 
 #include "cnpy.h"
 #include "atom_delay_calc.h"
+#include "vtr_assert.h"
+#include "vpr_utils.h"
+
+#include <unordered_set>
 
 namespace tgnn
 {
 
-// =============================================================================
-// Internal helper: get the BLIF net name for a tnode (for debug annotations)
-// =============================================================================
-static std::string get_blif_or_default(const AtomContext&  atom_ctx,
-                                        tatum::NodeId       tn,
-                                        const std::string&  no_net_placeholder,
-                                        const std::string&  no_pin_placeholder,
-                                        bool*               has_real_net_out = nullptr)
+static std::string get_blif_or_default(const AtomContext& atom_ctx,
+                                       tatum::NodeId      tn,
+                                       const std::string& no_net_placeholder,
+                                       const std::string& no_pin_placeholder,
+                                       bool*              has_real_net_out = nullptr)
 {
     AtomPinId apin = atom_ctx.lookup.tnode_atom_pin(tn);
     if (!apin) {
@@ -51,202 +52,459 @@ static std::string get_blif_or_default(const AtomContext&  atom_ctx,
     return atom_ctx.nlist.net_name(net);
 }
 
-// =============================================================================
-// Step 1 – build tnode / tedge skeleton from timing graph (called pre-placement)
-// =============================================================================
+void HeteroGraph::free_rr_tile_artifacts()
+{
+    for (Tile* t : tiles_by_id_) {
+        for (RREdge* re : t->rr_edges)
+            delete re;
+        t->rr_edges.clear();
+        t->rr_nodes.clear();
+        delete t;
+    }
+    tiles_by_id_.clear();
+    tile_coord_to_id_.clear();
+
+    for (RRTileEdge* e : rr_tile_edges_)
+        delete e;
+    rr_tile_edges_.clear();
+    rr_id_to_rrt_edge_map_.clear();
+
+    for (TileEdge* e : tile_edges_)
+        delete e;
+    tile_edges_.clear();
+
+    for (RRNode* n : pruned_rr_nodes_)
+        delete n;
+    pruned_rr_nodes_.clear();
+
+    for (RREdge* e : pruned_rr_edges_)
+        delete e;
+    pruned_rr_edges_.clear();
+
+    pruned_tnode_rr_edges_.clear();
+    tnode_rr_edges_.clear();
+}
+
 void HeteroGraph::build_from_timing_graph_prepl()
 {
     const auto& timing_ctx = g_vpr_ctx.timing();
     const auto& tg         = timing_ctx.graph;
 
-    // Build tnode list
     for (const tatum::NodeId node_id : tg->nodes()) {
         Tnode* tnode = new Tnode{node_id, tg->node_type(node_id)};
         tnode_nodes.emplace_back(tnode);
         tnode_id_map[node_id]  = tnode_nodes.size() - 1;
         tnode_ptr_map[node_id] = tnode;
     }
-
-    // Build tedge list (delay values for non-INTERCONNECT filled here;
-    // INTERCONNECT delays are filled later by enrich_edge_features)
-    const auto& atom_ctx = g_vpr_ctx.atom();
-    AtomDelayCalc atom_delay_calc(atom_ctx.nlist, atom_ctx.lookup);
-
-    for (const tatum::EdgeId edge_id : tg->edges()) {
-        tatum::NodeId   src_id    = tg->edge_src_node(edge_id);
-        tatum::NodeId   dst_id    = tg->edge_sink_node(edge_id);
-        tatum::EdgeType edge_type = tg->edge_type(edge_id);
-
-        // Annotate BLIF names (debug only)
-        auto upsert = [&](tatum::NodeId tn) {
-            if (tnode_blif_name.count(tn)) return;
-            bool real = false;
-            tnode_blif_name.emplace(tn, get_blif_or_default(atom_ctx, tn,
-                                        no_net_placeholder, no_pin_placeholder, &real));
-            tnode_has_real_net.emplace(tn, real);
-        };
-        upsert(src_id);
-        upsert(dst_id);
-
-        if (edge_type == tatum::EdgeType::PRIMITIVE_CLOCK_CAPTURE) {
-            AtomPinId clk_pin = atom_ctx.lookup.tnode_atom_pin(src_id);
-            AtomPinId dat_pin = atom_ctx.lookup.tnode_atom_pin(dst_id);
-            float t = (clk_pin && dat_pin)
-                          ? atom_delay_calc.atom_setup_time(clk_pin, dat_pin)
-                          : 0.0f;
-            tnode_edges.emplace_back(new TEdge{src_id, dst_id, edge_type, t});
-            continue;
-        }
-        if (edge_type == tatum::EdgeType::PRIMITIVE_CLOCK_LAUNCH) {
-            AtomPinId clk_pin = atom_ctx.lookup.tnode_atom_pin(src_id);
-            AtomPinId out_pin = atom_ctx.lookup.tnode_atom_pin(dst_id);
-            float d = atom_delay_calc.atom_clock_to_q_delay(clk_pin, out_pin, DelayType::MAX);
-            tnode_edges.emplace_back(new TEdge{src_id, dst_id, edge_type, d});
-            continue;
-        }
-        if (edge_type == tatum::EdgeType::PRIMITIVE_COMBINATIONAL) {
-            AtomPinId src_pin = atom_ctx.lookup.tnode_atom_pin(src_id);
-            AtomPinId snk_pin = atom_ctx.lookup.tnode_atom_pin(dst_id);
-            float d = atom_delay_calc.atom_combinational_delay(src_pin, snk_pin, DelayType::MAX);
-            tnode_edges.emplace_back(new TEdge{src_id, dst_id, edge_type, d});
-            continue;
-        }
-
-        // INTERCONNECT edge – defer delay; record net/ipin for later lookup
-        // We still need to find the RR endpoints so we reuse extract_used_rrnodes
-        // logic inline here via a lightweight path.
-        TEdge* e = new TEdge{src_id, dst_id, edge_type, 0.0f};
-        e->has_net_delay = false;
-        tnode_edges.emplace_back(e);
-    }
 }
 
-// =============================================================================
-// Internal helper – fills has_net_delay / parent_net_id / ipin / src_rrnode /
-// dst_rrnode for INTERCONNECT edges, and populates used_rrnodes.
-// =============================================================================
+void HeteroGraph::initialize_tile_map()
+{
+    const auto& grid = g_vpr_ctx.device().grid;
+    grid_w           = grid.width();
+    grid_h           = grid.height();
+
+    size_t tile_id = 0;
+    for (size_t x = 0; x < grid_w; ++x) {
+        for (size_t y = 0; y < grid_h; ++y) {
+            auto* tile   = new Tile{};
+            tile->id     = tile_id;
+            tile->x      = x;
+            tile->y      = y;
+            tile_coord_to_id_[{x, y}] = tile_id;
+            tiles_by_id_.push_back(tile);
+            ++tile_id;
+        }
+    }
+    std::cout << "[TGNN] Tile map initialized with " << tile_id << " tiles.\n";
+}
+
 void HeteroGraph::extract_used_rrnodes(const Netlist<>& netlist)
 {
-    const auto& timing_ctx      = g_vpr_ctx.timing();
-    const auto& tg              = timing_ctx.graph;
+    const auto& timing_ctx       = g_vpr_ctx.timing();
+    const auto& tg               = timing_ctx.graph;
     const auto& rr_graph        = g_vpr_ctx.device().rr_graph;
+    const auto& cluster_ctx     = g_vpr_ctx.clustering();
     const auto& atom_ctx        = g_vpr_ctx.atom();
     const auto& net_rr_terminals = g_vpr_ctx.routing().net_rr_terminals;
 
-    // Build a map from (src_tnode, dst_tnode) -> TEdge* for INTERCONNECT
-    std::unordered_map<tatum::NodeId,
-        std::unordered_map<tatum::NodeId, TEdge*>> interconnect_edges;
-    for (TEdge* e : tnode_edges) {
-        if (e->edge_type == tatum::EdgeType::INTERCONNECT)
-            interconnect_edges[e->src_tnode][e->dst_tnode] = e;
-    }
+    AtomDelayCalc atom_delay_calc_(atom_ctx.nlist, atom_ctx.lookup);
+
+    tnode_blif_name.reserve(tg->nodes().size());
+    auto upsert_blif_name = [&](tatum::NodeId tn) {
+        if (tnode_blif_name.find(tn) != tnode_blif_name.end()) return;
+        bool         real = false;
+        std::string  nm   = get_blif_or_default(atom_ctx, tn, no_net_placeholder,
+                                                no_pin_placeholder, &real);
+        tnode_blif_name.emplace(tn, std::move(nm));
+        tnode_has_real_net.emplace(tn, real);
+    };
+
+    auto make_rr_node = [&](RRNodeId rr_id) -> RRNode* {
+        auto it = used_rrnodes.find(rr_id);
+        if (it != used_rrnodes.end()) {
+            it->second->usage_count++;
+            return it->second;
+        }
+        RRNode* n = new RRNode{
+            rr_id,
+            size_t(rr_graph.node_type(rr_id)),
+            (size_t)rr_graph.node_xlow(rr_id),
+            (size_t)rr_graph.node_xhigh(rr_id),
+            (size_t)rr_graph.node_ylow(rr_id),
+            (size_t)rr_graph.node_yhigh(rr_id),
+            rr_graph.node_R(rr_id),
+            rr_graph.node_C(rr_id),
+            1};
+        used_rrnodes[rr_id] = n;
+        return n;
+    };
 
     for (const tatum::EdgeId edge_id : tg->edges()) {
-        if (tg->edge_type(edge_id) != tatum::EdgeType::INTERCONNECT) continue;
+        tatum::NodeId   source_node_id = tg->edge_src_node(edge_id);
+        tatum::NodeId   sink_node_id   = tg->edge_sink_node(edge_id);
+        tatum::EdgeType edge_type      = tg->edge_type(edge_id);
 
-        tatum::NodeId src_id = tg->edge_src_node(edge_id);
-        tatum::NodeId dst_id = tg->edge_sink_node(edge_id);
+        upsert_blif_name(source_node_id);
+        upsert_blif_name(sink_node_id);
 
-        auto it1 = interconnect_edges.find(src_id);
-        if (it1 == interconnect_edges.end()) continue;
-        auto it2 = it1->second.find(dst_id);
-        if (it2 == it1->second.end()) continue;
-        TEdge* edge = it2->second;
+        if (edge_type == tatum::EdgeType::PRIMITIVE_CLOCK_CAPTURE) {
+            AtomPinId clk_pin = atom_ctx.lookup.tnode_atom_pin(source_node_id);
+            AtomPinId dat_pin = atom_ctx.lookup.tnode_atom_pin(sink_node_id);
+            float     t       = (clk_pin && dat_pin)
+                                    ? atom_delay_calc_.atom_setup_time(clk_pin, dat_pin)
+                                    : 0.0f;
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, t});
+            continue;
+        }
+        if (edge_type == tatum::EdgeType::PRIMITIVE_CLOCK_LAUNCH) {
+            AtomPinId clock_pin  = atom_ctx.lookup.tnode_atom_pin(source_node_id);
+            AtomPinId output_pin = atom_ctx.lookup.tnode_atom_pin(sink_node_id);
+            float edge_delay     = (clock_pin && output_pin
+                                    && tg->node_type(source_node_id) == tatum::NodeType::CPIN
+                                    && tg->node_type(sink_node_id) == tatum::NodeType::SOURCE)
+                                       ? atom_delay_calc_.atom_clock_to_q_delay(clock_pin, output_pin,
+                                                                                DelayType::MAX)
+                                       : 0.0f;
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, edge_delay});
+            continue;
+        }
+        if (edge_type == tatum::EdgeType::PRIMITIVE_COMBINATIONAL) {
+            AtomPinId src_pin  = atom_ctx.lookup.tnode_atom_pin(source_node_id);
+            AtomPinId sink_pin = atom_ctx.lookup.tnode_atom_pin(sink_node_id);
+            float     edge_delay =
+                (src_pin && sink_pin)
+                    ? atom_delay_calc_.atom_combinational_delay(src_pin, sink_pin, DelayType::MAX)
+                    : 0.0f;
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, edge_delay});
+            continue;
+        }
 
-        // --- locate cluster net and ipin ---
-        AtomPinId src_atom_pin = atom_ctx.lookup.tnode_atom_pin(src_id);
-        if (!src_atom_pin) continue;
-        AtomBlockId src_atom_blk = atom_ctx.nlist.pin_block(src_atom_pin);
-        ClusterBlockId src_clb   = atom_ctx.lookup.atom_clb(src_atom_blk);
-        if (!src_clb.is_valid()) continue;
+        AtomPinId source_atom_pin = atom_ctx.lookup.tnode_atom_pin(source_node_id);
+        if (!source_atom_pin) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
 
-        AtomPinId sink_atom_pin = atom_ctx.lookup.tnode_atom_pin(dst_id);
-        if (!sink_atom_pin) continue;
+        AtomBlockId    source_atom_blk = atom_ctx.nlist.pin_block(source_atom_pin);
+        ClusterBlockId source_clb      = atom_ctx.lookup.atom_clb(source_atom_blk);
+        if (!source_clb.is_valid()) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
+
+        const t_pb_graph_pin* source_pb_pin =
+            atom_ctx.lookup.atom_pin_pb_graph_pin(source_atom_pin);
+        if (!source_pb_pin) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
+        size_t source_ipin = source_pb_pin->pin_count_in_cluster;
+
+        const t_pb* src_pb = cluster_ctx.clb_nlist.block_pb(source_clb);
+        if (!src_pb) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
+        auto pr_it = src_pb->pb_route.find((int)source_ipin);
+        if (pr_it == src_pb->pb_route.end()) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
+        AtomNetId source_atom_net = pr_it->second.atom_net_id;
+
+        AtomPinId sink_atom_pin = atom_ctx.lookup.tnode_atom_pin(sink_node_id);
+        if (!sink_atom_pin) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
+
         AtomBlockId sink_atom_blk = atom_ctx.nlist.pin_block(sink_atom_pin);
-        ClusterBlockId clb_sink   = atom_ctx.lookup.atom_clb(sink_atom_blk);
+        AtomNetId   sink_atom_net = atom_ctx.nlist.pin_net(sink_atom_pin);
+        if (sink_atom_net != source_atom_net) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
 
-        const t_pb_graph_pin* sink_gpin = atom_ctx.lookup.atom_pin_pb_graph_pin(sink_atom_pin);
-        if (!sink_gpin) continue;
+        ClusterBlockId clb_sink_block = atom_ctx.lookup.atom_clb(sink_atom_blk);
+        const t_pb_graph_pin* sink_gpin =
+            atom_ctx.lookup.atom_pin_pb_graph_pin(sink_atom_pin);
+        if (!sink_gpin) {
+            tnode_edges.emplace_back(
+                new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            continue;
+        }
         size_t sink_pb_route_id = sink_gpin->pin_count_in_cluster;
 
-        size_t         sink_net_pin_index  = (size_t)-1;
+        int            sink_net_pin_index  = -1;
         ClusterNetId   sink_cluster_net_id = ClusterNetId::INVALID();
-        size_t         sink_block_pin_index;
+        int            sink_block_pin_index;
         std::tie(sink_cluster_net_id, sink_block_pin_index, sink_net_pin_index) =
-            find_pb_route_clb_input_net_pin(clb_sink, sink_pb_route_id);
+            find_pb_route_clb_input_net_pin(clb_sink_block, (int)sink_pb_route_id);
 
-        if (sink_cluster_net_id == ClusterNetId::INVALID() ||
-            sink_net_pin_index == (size_t)-1) continue;
+        RRNodeId source_rr_node_idx;
+        RRNodeId sink_rr_node_idx;
 
-        if (netlist.net_is_ignored(sink_cluster_net_id)) continue;
-
-        RRNodeId src_rr_id  = net_rr_terminals[sink_cluster_net_id][0];
-        RRNodeId sink_rr_id = net_rr_terminals[sink_cluster_net_id][sink_net_pin_index];
-
-        // Cache RRNode metadata
-        auto make_rr_node = [&](RRNodeId rr_id) -> RRNode* {
-            auto it = used_rrnodes.find(rr_id);
-            if (it != used_rrnodes.end()) {
-                it->second->usage_count++;
-                return it->second;
+        if (sink_cluster_net_id != ClusterNetId::INVALID() && sink_net_pin_index >= 0) {
+            if (netlist.net_is_ignored(sink_cluster_net_id)) {
+                tnode_edges.emplace_back(
+                    new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+                continue;
             }
-            RRNode* n = new RRNode{
-                rr_id,
-                size_t(rr_graph.node_type(rr_id)),
-                (size_t)rr_graph.node_xlow(rr_id),
-                (size_t)rr_graph.node_xhigh(rr_id),
-                (size_t)rr_graph.node_ylow(rr_id),
-                (size_t)rr_graph.node_yhigh(rr_id),
-                rr_graph.node_R(rr_id),
-                rr_graph.node_C(rr_id),
-                1};
-            used_rrnodes[rr_id] = n;
-            return n;
-        };
+            source_rr_node_idx = net_rr_terminals[sink_cluster_net_id][0];
+            sink_rr_node_idx   = net_rr_terminals[sink_cluster_net_id][(size_t)sink_net_pin_index];
+        } else {
+            if (source_clb == clb_sink_block) {
+                tnode_edges.emplace_back(
+                    new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            } else {
+                tnode_edges.emplace_back(
+                    new TEdge{source_node_id, sink_node_id, edge_type, 0.0f});
+            }
+            continue;
+        }
 
-        edge->src_rrnode    = make_rr_node(src_rr_id);
-        edge->dst_rrnode    = make_rr_node(sink_rr_id);
+        RRNode* source_rr_node = make_rr_node(source_rr_node_idx);
+        RRNode* sink_rr_node   = make_rr_node(sink_rr_node_idx);
+
+        tnode_rr_edges_.emplace(source_node_id, source_rr_node_idx);
+        tnode_rr_edges_.emplace(sink_node_id, sink_rr_node_idx);
+
+        TEdge* edge = new TEdge{source_node_id, sink_node_id, edge_type, 0.0f};
+        edge->src_rrnode    = source_rr_node;
+        edge->dst_rrnode    = sink_rr_node;
         edge->has_net_delay = true;
         edge->parent_net_id = sink_cluster_net_id;
-        edge->ipin          = sink_net_pin_index;
+        edge->ipin          = (size_t)sink_net_pin_index;
+        tnode_edges.emplace_back(edge);
     }
-}
-
-// =============================================================================
-// Post-route: refresh RR endpoints / tile context for INTERCONNECT edges
-// =============================================================================
-void HeteroGraph::initialize_tile_map()
-{
-    const auto& device_ctx = g_vpr_ctx.device();
-    grid_w                 = device_ctx.grid.width();
-    grid_h                 = device_ctx.grid.height();
 }
 
 void HeteroGraph::prune_rr_graph()
 {
-    // Placeholder: full BFS prune can be reintroduced when RR–tile graph is wired.
+    std::unordered_map<RRNodeId, std::vector<RRNodeId>> fwd_adj;
+    std::unordered_map<RRNodeId, std::vector<RRNodeId>> rev_adj;
+
+    const auto& rr_graph = g_vpr_ctx.device().rr_graph;
+    for (RRNodeId src : rr_graph.nodes()) {
+        for (t_edge_size i = 0; i < rr_graph.num_edges(src); ++i) {
+            RRNodeId dst = rr_graph.edge_sink_node(src, i);
+            fwd_adj[src].push_back(dst);
+            rev_adj[dst].push_back(src);
+        }
+    }
+
+    std::unordered_set<RRNodeId> reachable_from_source;
+    std::unordered_set<RRNodeId> reachable_to_sink;
+    std::unordered_set<RRNodeId> visited;
+    std::queue<RRNodeId>         q;
+
+    for (const auto& kv : used_rrnodes) {
+        if (visited.insert(kv.first).second) {
+            q.push(kv.first);
+            reachable_from_source.insert(kv.first);
+        }
+    }
+
+    while (!q.empty()) {
+        RRNodeId curr = q.front();
+        q.pop();
+        reachable_from_source.insert(curr);
+        for (RRNodeId nbr : fwd_adj[curr]) {
+            if (visited.insert(nbr).second) q.push(nbr);
+        }
+    }
+
+    visited.clear();
+    for (const auto& kv : used_rrnodes) {
+        if (visited.insert(kv.first).second) {
+            q.push(kv.first);
+            reachable_to_sink.insert(kv.first);
+        }
+    }
+
+    while (!q.empty()) {
+        RRNodeId curr = q.front();
+        q.pop();
+        reachable_to_sink.insert(curr);
+        for (RRNodeId nbr : rev_adj[curr]) {
+            if (visited.insert(nbr).second) q.push(nbr);
+        }
+    }
+
+    std::unordered_set<RRNodeId> valid_nodes;
+    for (RRNodeId node : reachable_from_source) {
+        if (reachable_to_sink.count(node)) valid_nodes.insert(node);
+    }
+
+    std::unordered_map<std::pair<size_t, size_t>, size_t, pair_hash> tile_edge_cnt;
+    id_remap_.clear();
+
+    for (RRNodeId id : valid_nodes) {
+        size_t xlow  = (size_t)rr_graph.node_xlow(id);
+        size_t xhigh = (size_t)rr_graph.node_xhigh(id);
+        size_t ylow  = (size_t)rr_graph.node_ylow(id);
+        size_t yhigh = (size_t)rr_graph.node_yhigh(id);
+
+        auto* node = new RRNode{
+            id,
+            size_t(rr_graph.node_type(id)),
+            xlow, xhigh, ylow, yhigh,
+            rr_graph.node_R(id),
+            rr_graph.node_C(id),
+            0};
+
+        size_t new_id = pruned_rr_nodes_.size();
+        id_remap_[id] = new_id;
+        pruned_rr_nodes_.push_back(node);
+
+        if (auto it = used_rrnodes.find(id); it != used_rrnodes.end()) {
+            node->usage_count = it->second->usage_count;
+            for (size_t x = xlow; x <= xhigh; ++x) {
+                for (size_t y = ylow; y <= yhigh; ++y) {
+                    auto coord_it = tile_coord_to_id_.find({x, y});
+                    if (coord_it == tile_coord_to_id_.end()) continue;
+                    size_t     tile_id = coord_it->second;
+                    Tile*      t       = tiles_by_id_[tile_id];
+                    t->rr_nodes.push_back(node);
+                    t->source_sink_count += node->usage_count;
+
+                    auto* rte = new RRTileEdge{id, tile_id};
+                    rr_tile_edges_.push_back(rte);
+                    rr_id_to_rrt_edge_map_[id] = rte;
+                }
+            }
+            continue;
+        }
+
+        if (xlow == xhigh && ylow == yhigh) {
+            auto coord_it = tile_coord_to_id_.find({xlow, ylow});
+            if (coord_it != tile_coord_to_id_.end()) {
+                size_t tile_id = coord_it->second;
+                tiles_by_id_[tile_id]->rr_nodes.push_back(node);
+            }
+        } else {
+            for (size_t x = xlow; x <= xhigh; ++x) {
+                for (size_t y = ylow; y <= yhigh; ++y) {
+                    auto coord_it = tile_coord_to_id_.find({x, y});
+                    if (coord_it == tile_coord_to_id_.end()) continue;
+                    size_t tile_id = coord_it->second;
+                    Tile*  t       = tiles_by_id_[tile_id];
+                    t->rr_nodes.push_back(node);
+                    std::pair<size_t, size_t> te = std::minmax(tile_id, tile_id);
+                    tile_edge_cnt[te]++;
+                }
+            }
+        }
+    }
+
+    for (RRNodeId src : rr_graph.nodes()) {
+        if (!valid_nodes.count(src)) continue;
+
+        size_t xlow_s  = (size_t)rr_graph.node_xlow(src);
+        size_t xhigh_s = (size_t)rr_graph.node_xhigh(src);
+        size_t ylow_s  = (size_t)rr_graph.node_ylow(src);
+        size_t yhigh_s = (size_t)rr_graph.node_yhigh(src);
+
+        for (t_edge_size i = 0; i < rr_graph.num_edges(src); ++i) {
+            RRNodeId dst = rr_graph.edge_sink_node(src, i);
+            if (!valid_nodes.count(dst)) continue;
+
+            size_t xlow_d  = (size_t)rr_graph.node_xlow(dst);
+            size_t xhigh_d = (size_t)rr_graph.node_xhigh(dst);
+            size_t ylow_d  = (size_t)rr_graph.node_ylow(dst);
+            size_t yhigh_d = (size_t)rr_graph.node_yhigh(dst);
+
+            if ((xlow_s == xlow_d && ylow_s == ylow_d)
+                || (xhigh_s == xhigh_d && yhigh_s == yhigh_d)) {
+                RRSwitchId switch_id = RRSwitchId(rr_graph.edge_switch(src, i));
+                const auto& sw     = rr_graph.rr_switch_inf(switch_id);
+                auto*       edge   = new RREdge{src,
+                                         dst,
+                                         sw.Tdel,
+                                         sw.R,
+                                         sw.Cin,
+                                         sw.Cout};
+
+                std::pair<size_t, size_t> coord;
+                if (xlow_s == xlow_d && ylow_s == ylow_d)
+                    coord = {xlow_s, ylow_s};
+                else
+                    coord = {xhigh_s, yhigh_s};
+
+                auto cit = tile_coord_to_id_.find(coord);
+                if (cit != tile_coord_to_id_.end()) {
+                    size_t tile_id = cit->second;
+                    tiles_by_id_[tile_id]->rr_edges.push_back(edge);
+                }
+            }
+        }
+    }
+
+    for (const auto& kv : tile_edge_cnt) {
+        size_t    src_tid = kv.first.first;
+        size_t    dst_tid = kv.first.second;
+        TileEdge* te      = new TileEdge{src_tid, dst_tid, kv.second};
+        tile_edges_.push_back(te);
+    }
+
+    std::cout << "[TGNN] Pruned RRGraph: pruned nodes = " << pruned_rr_nodes_.size()
+              << ", tile_edges = " << tile_edges_.size() << "\n";
 }
 
 void HeteroGraph::update_pruned_tnode_rr_edges()
 {
-    // Placeholder: sync TEdge RR pointers after prune.
+    pruned_tnode_rr_edges_.clear();
+    for (const auto& kv : tnode_rr_edges_) {
+        auto it = id_remap_.find(kv.second);
+        if (it != id_remap_.end())
+            pruned_tnode_rr_edges_.emplace_back(kv.first, it->second);
+    }
 }
 
 void HeteroGraph::build_rr_node_map()
 {
-    initialize_tile_map();
+    free_rr_tile_artifacts();
 
-    for (auto& kv : used_rrnodes) {
+    for (auto& kv : used_rrnodes)
         delete kv.second;
-    }
     used_rrnodes.clear();
 
-    for (TEdge* e : tnode_edges) {
-        if (e->edge_type != tatum::EdgeType::INTERCONNECT) continue;
-        e->src_rrnode    = nullptr;
-        e->dst_rrnode    = nullptr;
-        e->has_net_delay = false;
-    }
+    for (TEdge* e : tnode_edges)
+        delete e;
+    tnode_edges.clear();
+
+    initialize_tile_map();
 
     const Netlist<>& netlist = (const Netlist<>&)g_vpr_ctx.clustering().clb_nlist;
     extract_used_rrnodes(netlist);
