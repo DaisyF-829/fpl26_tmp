@@ -1,5 +1,5 @@
 """
-HeteroTimingMPNN：4 类有向边各自 edge_enc / edge_mlp，节点类型 tnode。
+HeteroTimingMPNN：4 类有向边各自 edge_enc / edge_mlp；节点回归 + 全图 max-pool 后 graph_head 预测 cpd。
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
+from torch_geometric.nn import global_max_pool
 from torch_scatter import scatter
 
 NUM_EDGE_TYPES = 4
@@ -84,8 +85,13 @@ class HeteroTimingMPNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(max(h // 2, 1), 1),
         )
+        self.graph_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
 
-    def forward(self, batch: HeteroData) -> torch.Tensor:
+    def forward(self, batch: HeteroData) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.node_enc(batch[NODE_KEY].x)
         edge_embs: dict[int, torch.Tensor] = {}
         for k in range(NUM_EDGE_TYPES):
@@ -93,4 +99,8 @@ class HeteroTimingMPNN(nn.Module):
             edge_embs[k] = self.edge_encs[str(k)](batch[rel].edge_attr)
         for layer in self.layers:
             h = layer(h, batch, edge_embs)
-        return self.reg_head(h).squeeze(-1)
+        node_pred = self.reg_head(h).squeeze(-1)
+        batch_vec = getattr(batch[NODE_KEY], "batch", None)
+        g = global_max_pool(h, batch_vec)
+        graph_pred = self.graph_head(g).squeeze(-1)
+        return node_pred, graph_pred

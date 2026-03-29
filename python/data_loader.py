@@ -183,6 +183,9 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     data[NODE_KEY].y_valid = torch.from_numpy(y_valid_np)
     data[NODE_KEY].y_critical = torch.zeros(N, dtype=torch.bool)
     data[NODE_KEY].node_type = torch.from_numpy(tnode_type_i)
+    data[NODE_KEY].fanout = torch.from_numpy(
+        np.asarray(fanout, dtype=np.int32).reshape(-1)[:N].copy()
+    )
 
     for k in range(NUM_EDGE_TYPES):
         rel = edge_type_key(k)

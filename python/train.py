@@ -2,6 +2,7 @@
 训练 HeteroTimingMPNN：HeteroData（4 类边），MSE（tnode.y_valid 掩码），按验证集 Kendall τ 保存最优模型。
 默认从 data_dir 按 npz 文件三路划分：先 test，再 val，其余 train（无重叠）。
 --val_dir：验证集改来自单独目录（忽略 val_frac）；--test_dir：测试集改来自单独目录（忽略 test_frac）。
+早停：至少 min_epochs（默认 100）轮；之后验证 tau 连续 patience（默认 20）轮未提升则停止。
 训练结束后加载最优 checkpoint 对测试集跑一次 eval。
 """
 
@@ -15,10 +16,11 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from scipy.stats import kendalltau
+import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
 from data_loader import load_timing_graph
+from metrics import compute_regression_metrics, format_metrics_line
 from model import HeteroTimingMPNN
 
 
@@ -101,41 +103,49 @@ def _split_npz_paths_by_file(
     return train_paths, val_paths_list, test_paths
 
 
-def train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device) -> float:
+def train_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    graph_loss_weight: float,
+) -> float:
     model.train()
-    total_loss = 0.0
-    total_count = 0
+    total_loss_sum = 0.0
+    n_batches = 0
     crit = nn.MSELoss(reduction="sum")
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
-        pred = model(batch)
+        pred, pred_graph = model(batch)
         mask = batch["tnode"].y_valid
-        if not mask.any():
-            continue
-        loss = crit(pred[mask], batch["tnode"].y_arrival[mask])
-        n = int(mask.sum().item())
-        loss = loss / n
+        cpd_tgt = batch.cpd.to(device).view(-1).to(dtype=pred_graph.dtype)
+        loss_graph = F.mse_loss(pred_graph, cpd_tgt)
+        if mask.any():
+            loss_node = crit(pred[mask], batch["tnode"].y_arrival[mask])
+            n = int(mask.sum().item())
+            loss_node = loss_node / n
+        else:
+            loss_node = pred.new_tensor(0.0)
+        loss = loss_node + graph_loss_weight * loss_graph
         loss.backward()
         optimizer.step()
-        total_loss += float(loss.item()) * n
-        total_count += n
-    if total_count == 0:
+        total_loss_sum += float(loss.item())
+        n_batches += 1
+    if n_batches == 0:
         return 0.0
-    return total_loss / total_count
+    return total_loss_sum / n_batches
 
 
 def eval_epoch(model: nn.Module, loader: DataLoader, device: torch.device) -> dict:
     model.eval()
     preds: list[np.ndarray] = []
     targets: list[np.ndarray] = []
-    abs_sum = 0.0
-    sq_sum = 0.0
     n_mae = 0
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            pred = model(batch)
+            pred, _ = model(batch)
             mask = batch["tnode"].y_valid
             if not mask.any():
                 continue
@@ -143,25 +153,22 @@ def eval_epoch(model: nn.Module, loader: DataLoader, device: torch.device) -> di
             t = batch["tnode"].y_arrival[mask].detach().cpu().numpy()
             preds.append(p)
             targets.append(t)
-            abs_sum += float(np.abs(p - t).sum())
-            sq_sum += float(((p - t) ** 2).sum())
             n_mae += p.size
 
     if n_mae == 0:
-        return {"mae": float("nan"), "rmse": float("nan"), "tau": float("nan")}
+        nan = float("nan")
+        return {
+            "mae": nan,
+            "rmse": nan,
+            "tau": nan,
+            "spearman_r": nan,
+            "mape": nan,
+            "r2": nan,
+        }
 
-    mae = abs_sum / n_mae
-    rmse = math.sqrt(sq_sum / n_mae)
     p_all = np.concatenate(preds)
     t_all = np.concatenate(targets)
-    try:
-        tau_stat = kendalltau(p_all, t_all, nan_policy="omit")
-    except TypeError:
-        tau_stat = kendalltau(p_all, t_all)
-    corr = tau_stat.correlation
-    tau = float(corr) if corr is not None and not math.isnan(float(corr)) else float("nan")
-
-    return {"mae": mae, "rmse": rmse, "tau": tau}
+    return compute_regression_metrics(p_all, t_all)
 
 
 def main() -> None:
@@ -191,11 +198,29 @@ def main() -> None:
         default=None,
         help="若指定：测试集来自该目录，不从 data_dir 中按 test_frac 划分",
     )
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--epochs", type=int, default=100, help="最大训练轮数（上限）；早停仍受此限制")
+    ap.add_argument(
+        "--min_epochs",
+        type=int,
+        default=100,
+        help="至少训练多少个 epoch 后才允许因早停结束",
+    )
+    ap.add_argument(
+        "--patience",
+        type=int,
+        default=20,
+        help="验证集 tau 连续多少个 epoch 未刷新最优则早停（仅在 epoch>=min_epochs 时生效）",
+    )
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--batch", type=int, default=4)
+    ap.add_argument(
+        "--graph_loss_weight",
+        type=float,
+        default=1.0,
+        help="全图 max-pool 预测 cpd 的 MSE 相对节点到达时间损失的权重（总 loss = 节点 + weight * 图）",
+    )
     ap.add_argument("--save", type=str, default="model.pt")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -287,17 +312,24 @@ def main() -> None:
 
     best_tau = float("-inf")
     save_path = Path(args.save)
+    epochs_no_improve = 0
 
     for epoch in range(1, args.epochs + 1):
-        tr_loss = train_epoch(model, train_loader, optimizer, device)
+        tr_loss = train_epoch(
+            model, train_loader, optimizer, device, graph_loss_weight=args.graph_loss_weight
+        )
         metrics = eval_epoch(model, val_loader, device)
         tau = metrics["tau"]
         print(
             f"Epoch {epoch:4d}  train_loss={tr_loss:.6f}  "
-            f"val_mae={metrics['mae']:.6f}  val_rmse={metrics['rmse']:.6f}  val_tau={tau:.6f}"
+            f"val_mae={metrics['mae']:.4f}  val_mape={metrics['mape']:.2f}%  "
+            f"val_r2={metrics['r2']:.4f}  val_tau={metrics['tau']:.4f}  "
+            f"val_spearman={metrics['spearman_r']:.4f}"
         )
-        if not math.isnan(tau) and tau > best_tau:
+        improved = not math.isnan(tau) and tau > best_tau
+        if improved:
             best_tau = tau
+            epochs_no_improve = 0
             save_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(
                 {
@@ -305,31 +337,45 @@ def main() -> None:
                     "hidden": args.hidden,
                     "layers": args.layers,
                     "model_class": "HeteroTimingMPNN",
+                    "graph_loss_weight": args.graph_loss_weight,
                 },
                 save_path,
             )
             print(f"  -> 保存最优模型 (tau={best_tau:.6f}) -> {save_path}")
+        else:
+            epochs_no_improve += 1
+
+        if epoch >= args.min_epochs and epochs_no_improve >= args.patience:
+            print(
+                f"早停：验证 tau 已连续 {args.patience} 个 epoch 未提升 "
+                f"（当前第 {epoch} epoch，min_epochs={args.min_epochs}）。",
+                flush=True,
+            )
+            break
+
+    if save_path.is_file():
+        try:
+            ckpt = torch.load(save_path, map_location=device, weights_only=False)
+        except TypeError:
+            ckpt = torch.load(save_path, map_location=device)
+        model.load_state_dict(ckpt["model_state"])
+    else:
+        print(
+            f"警告：未找到已保存的最优模型 {save_path}，以下汇总使用当前权重。",
+            flush=True,
+        )
+
+    print("\n======== 最优模型 · 各划分节点级指标（归一化到达时间）========", flush=True)
+    train_metrics = eval_epoch(model, train_loader, device)
+    print(f"[Train] {format_metrics_line(train_metrics)}", flush=True)
+    val_metrics = eval_epoch(model, val_loader, device)
+    print(f"[Val]   {format_metrics_line(val_metrics)}", flush=True)
 
     if test_paths:
         test_data = [load_timing_graph(str(p)) for p in test_paths]
         test_loader = DataLoader(test_data, batch_size=args.batch, shuffle=False)
-        if save_path.is_file():
-            try:
-                ckpt = torch.load(save_path, map_location=device, weights_only=False)
-            except TypeError:
-                ckpt = torch.load(save_path, map_location=device)
-            model.load_state_dict(ckpt["model_state"])
-        else:
-            print(
-                f"警告：未找到已保存的最优模型 {save_path}，使用当前权重评估测试集。",
-                flush=True,
-            )
         test_metrics = eval_epoch(model, test_loader, device)
-        print(
-            f"\n[Test]  mae={test_metrics['mae']:.6f}  "
-            f"rmse={test_metrics['rmse']:.6f}  tau={test_metrics['tau']:.6f}",
-            flush=True,
-        )
+        print(f"[Test]  {format_metrics_line(test_metrics)}", flush=True)
 
 
 if __name__ == "__main__":
