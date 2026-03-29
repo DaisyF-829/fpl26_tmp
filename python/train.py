@@ -1,5 +1,5 @@
 """
-训练 TimingMPNN：递归加载 .npz，MSE（y_valid 掩码），按验证集 Kendall τ 保存最优模型。
+训练 HeteroTimingMPNN：HeteroData（4 类边），MSE（tnode.y_valid 掩码），按验证集 Kendall τ 保存最优模型。
 默认按「文件」划分：同一目录下若干 npz，随机打乱后取一定比例整文件作为验证/测试集（与训练集无重叠）。
 若指定 --val_dir 则训练集与验证集来自不同目录，不再做比例划分。
 """
@@ -18,7 +18,7 @@ from scipy.stats import kendalltau
 from torch_geometric.loader import DataLoader
 
 from data_loader import load_timing_graph
-from model import TimingMPNN
+from model import HeteroTimingMPNN
 
 
 def _find_npz_files(root: Path) -> list[Path]:
@@ -62,11 +62,11 @@ def train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Opt
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad(set_to_none=True)
-        pred = model(batch.x, batch.edge_index, batch.edge_attr)
-        mask = batch.y_valid
+        pred = model(batch)
+        mask = batch["tnode"].y_valid
         if not mask.any():
             continue
-        loss = crit(pred[mask], batch.y_arrival[mask])
+        loss = crit(pred[mask], batch["tnode"].y_arrival[mask])
         n = int(mask.sum().item())
         loss = loss / n
         loss.backward()
@@ -88,12 +88,12 @@ def eval_epoch(model: nn.Module, loader: DataLoader, device: torch.device) -> di
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            pred = model(batch.x, batch.edge_index, batch.edge_attr)
-            mask = batch.y_valid
+            pred = model(batch)
+            mask = batch["tnode"].y_valid
             if not mask.any():
                 continue
             p = pred[mask].detach().cpu().numpy()
-            t = batch.y_arrival[mask].detach().cpu().numpy()
+            t = batch["tnode"].y_arrival[mask].detach().cpu().numpy()
             preds.append(p)
             targets.append(t)
             abs_sum += float(np.abs(p - t).sum())
@@ -187,7 +187,7 @@ def main() -> None:
     val_data = [load_timing_graph(str(p)) for p in val_paths_list]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+    model = HeteroTimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     train_loader = DataLoader(train_data, batch_size=args.batch, shuffle=True)
@@ -212,6 +212,7 @@ def main() -> None:
                     "model_state": model.state_dict(),
                     "hidden": args.hidden,
                     "layers": args.layers,
+                    "model_class": "HeteroTimingMPNN",
                 },
                 save_path,
             )

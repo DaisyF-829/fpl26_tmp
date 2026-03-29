@@ -1,5 +1,6 @@
 """
-加载训练好的 TimingMPNN，对单个 timing_graph.npz 推理并评估 top-K 路径覆盖率。
+加载训练好的 HeteroTimingMPNN，对单个 timing_graph.npz 推理并评估 top-K 路径覆盖率。
+节点下标与 npz 中 tnode 一致（全图加载，无 node_old_indices）。
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from data_loader import load_timing_graph
-from model import TimingMPNN
+from data_loader import hetero_combined_edges, load_timing_graph
+from model import HeteroTimingMPNN
 
 
 def derive_top_k_paths(
@@ -68,20 +69,20 @@ def evaluate(
         ckpt = torch.load(model_path, map_location=device)
     hidden = int(ckpt.get("hidden", 128))
     layers = int(ckpt.get("layers", 6))
-    model = TimingMPNN(hidden_dim=hidden, num_layers=layers).to(device)
+    model = HeteroTimingMPNN(hidden_dim=hidden, num_layers=layers).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
     data = load_timing_graph(npz_path)
     data = data.to(device)
     with torch.no_grad():
-        pred_norm = model(data.x, data.edge_index, data.edge_attr)
-    cpd = float(data.cpd[0].item())
+        pred_norm = model(data)
     pred_arrival_ns = (pred_norm * data.cpd[0]).detach().cpu().numpy()
 
-    edge_index = data.edge_index.cpu().numpy()
-    node_type = data.node_type.cpu().numpy()
-    tedge_delay = data.tedge_delay.cpu().numpy()
+    cei, ctd = hetero_combined_edges(data)
+    edge_index = cei.cpu().numpy()
+    tedge_delay = ctd.cpu().numpy()
+    node_type = data["tnode"].node_type.cpu().numpy()
 
     pred_nodes = derive_top_k_paths(
         pred_arrival_ns,
@@ -91,16 +92,15 @@ def evaluate(
         K=K,
     )
 
+    N = int(pred_arrival_ns.shape[0])
     z = np.load(npz_path, allow_pickle=False)
     try:
-        N_full = int(np.asarray(z["tnode_type"]).reshape(-1).shape[0])
         raw = z["tnode_on_critical_path"]
-        crit_full = np.asarray(raw, dtype=np.int8).reshape(-1)[:N_full]
-        old_ix = data.node_old_indices.detach().cpu().numpy()
-        true_crit = crit_full[old_ix]
+        crit_full = np.asarray(raw, dtype=np.int8).reshape(-1)[:N]
+        true_crit = crit_full
         true_path_nodes = set(int(i) for i in np.where(true_crit > 0)[0])
     except Exception:
-        true_crit = np.zeros(int(data.num_nodes), dtype=np.int8)
+        true_crit = np.zeros(N, dtype=np.int8)
         true_path_nodes = set()
         print("未使用 tnode_on_critical_path（无法读取或未启用），Coverage/Precision 参考意义有限。")
     finally:
@@ -122,7 +122,6 @@ def evaluate(
     print(f"Precision           : {precision:.3f}" if not np.isnan(precision) else "Precision           : nan")
 
     if save_pred:
-        N = int(pred_arrival_ns.shape[0])
         on_pred = np.zeros(N, dtype=np.int8)
         for i in pred_nodes:
             if 0 <= i < N:

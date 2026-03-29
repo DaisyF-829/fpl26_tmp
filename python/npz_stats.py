@@ -80,19 +80,6 @@ _MASK_KEYS = frozenset(
 )
 
 
-def _node_keep_indices_npz(z, N: int) -> np.ndarray:
-    """与 data_loader.node_keep_indices 一致（此处不 import torch，供仅装 numpy 的环境使用）。"""
-    if "tnode_valid_mask" not in z.files:
-        return np.arange(N, dtype=np.int64)
-    m = np.asarray(z["tnode_valid_mask"]).reshape(-1)[:N]
-    if m.dtype == np.bool_:
-        keep = m.copy()
-    else:
-        keep = m.astype(np.float32) != 0
-    idx = np.flatnonzero(keep)
-    return idx.astype(np.int64)
-
-
 def summarize_npz(path: Path) -> None:
     print(f"\n{'=' * 72}\n文件: {path.resolve()}\n{'=' * 72}", flush=True)
     z = np.load(path, allow_pickle=False)
@@ -115,36 +102,33 @@ def summarize_npz(path: Path) -> None:
         else:
             print(f"  [{key}] shape={a.shape} dtype={a.dtype} size={a.size} (略过逐元素统计，过大)", flush=True)
 
-    # 与 load_timing_graph 对齐：先按 tnode_valid_mask 保留节点，再用 tnode_rt_time 作监督
+    # 与 load_timing_graph (HeteroData) 对齐：全 N 节点，y_valid = mask & rt
     tnode_type = _try_get_array(z, "tnode_type") if "tnode_type" in z.files else None
     if tnode_type is not None:
         n = int(np.asarray(tnode_type).reshape(-1).shape[0])
-        print(f"\n--- 训练标签摘要 (原始 N={n}) ---", flush=True)
-        try:
-            keep = _node_keep_indices_npz(z, n)
-        except ValueError as ex:
-            print(f"  tnode_valid_mask: {ex}", flush=True)
-            keep = None
-        if keep is not None:
-            print(f"  保留节点数 N'={keep.size}（与 data_loader 过滤一致）", flush=True)
-            rt_time = _try_get_array(z, "tnode_rt_time") if "tnode_rt_time" in z.files else None
-            if rt_time is not None:
-                rt = np.asarray(rt_time, dtype=np.float64).reshape(-1)[:n]
-                rt_kept = rt[keep]
-                yv = np.isfinite(rt_kept) & (rt_kept >= 0.0)
+        print(f"\n--- 训练标签摘要 (N={n}，与 npz 节点一一对应) ---", flush=True)
+        if "tnode_valid_mask" in z.files:
+            m = np.asarray(z["tnode_valid_mask"]).reshape(-1)[:n]
+            vm = m.astype(bool) if m.dtype == np.bool_ else (m.astype(np.float32) != 0)
+        else:
+            vm = np.ones(n, dtype=bool)
+        rt_time = _try_get_array(z, "tnode_rt_time") if "tnode_rt_time" in z.files else None
+        if rt_time is not None:
+            rt = np.asarray(rt_time, dtype=np.float64).reshape(-1)[:n]
+            yv = vm & np.isfinite(rt) & (rt >= 0.0)
+            print(
+                f"  y_valid (= tnode_valid_mask & rt>=0 & 有限): {int(yv.sum())}/{n}",
+                flush=True,
+            )
+            if yv.any():
+                sub = rt[yv]
                 print(
-                    f"  过滤后可作监督的节点 (tnode_rt_time 有限且 >=0): {int(yv.sum())}/{rt_kept.size}",
+                    f"  tnode_rt_time (监督子集): min={_fmt_float(float(sub.min()))} "
+                    f"max={_fmt_float(float(sub.max()))} mean={_fmt_float(float(sub.mean()))}",
                     flush=True,
                 )
-                if yv.any():
-                    sub = rt_kept[yv]
-                    print(
-                        f"  tnode_rt_time (监督子集): min={_fmt_float(float(sub.min()))} "
-                        f"max={_fmt_float(float(sub.max()))} mean={_fmt_float(float(sub.mean()))}",
-                        flush=True,
-                    )
-            else:
-                print("  (无 tnode_rt_time 或无法读取)", flush=True)
+        else:
+            print("  (无 tnode_rt_time 或无法读取)", flush=True)
     if "tedge_src" in z.files:
         es = _try_get_array(z, "tedge_src")
         if es is not None:
