@@ -1,12 +1,14 @@
 """
-加载训练好的 HeteroTimingMPNN，对单个 timing_graph.npz 推理并评估 top-K 路径覆盖率。
+加载训练好的 HeteroTimingMPNN，对单个或目录下全部 .npz 推理并评估。
 节点下标与 npz 中 tnode 一致（全图加载，无 node_old_indices）。
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -92,6 +94,8 @@ def true_critical_nodes_from_npz(
     edge_delay: np.ndarray,
     node_type: np.ndarray,
     K: int,
+    *,
+    silent: bool = False,
 ) -> tuple[set[int], np.ndarray, str]:
     """
     优先使用 tnode_on_critical_path；无法读取时用 tnode_rt_time + tedge_delay 做 STA 回溯。
@@ -109,7 +113,8 @@ def true_critical_nodes_from_npz(
 
     rt = z["tnode_rt_time"] if "tnode_rt_time" in z.files else None
     if rt is None:
-        print("无法从 npz 读取 tnode_on_critical_path 或 tnode_rt_time，Coverage/Precision 无真值。")
+        if not silent:
+            print("无法从 npz 读取 tnode_on_critical_path 或 tnode_rt_time，Coverage/Precision 无真值。")
         return set(), true_crit, "none"
 
     rt = np.asarray(rt, dtype=np.float64).reshape(-1)[:N]
@@ -131,20 +136,15 @@ def true_critical_nodes_from_npz(
     for i in nodes:
         if 0 <= i < N:
             true_crit[i] = 1
-    print(
-        "未读取 tnode_on_critical_path；已用 STA 回溯（tnode_rt_time + tedge_delay，"
-        f"与 evaluate 相同的 top-{K} SINK）构造真值节点集。"
-    )
+    if not silent:
+        print(
+            "未读取 tnode_on_critical_path；已用 STA 回溯（tnode_rt_time + tedge_delay，"
+            f"与 evaluate 相同的 top-{K} SINK）构造真值节点集。"
+        )
     return nodes, true_crit, "STA:tnode_rt_time+tedge_delay"
 
 
-def evaluate(
-    model_path: str,
-    npz_path: str,
-    K: int = 20,
-    save_pred: str | None = None,
-) -> tuple[float, float]:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def load_hetero_model(model_path: str, device: torch.device) -> HeteroTimingMPNN:
     try:
         ckpt = torch.load(model_path, map_location=device, weights_only=False)
     except TypeError:
@@ -154,7 +154,25 @@ def evaluate(
     model = HeteroTimingMPNN(hidden_dim=hidden, num_layers=layers).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
+    return model
 
+
+def _find_npz_files(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(root.rglob("*.npz"))
+
+
+def evaluate_one(
+    model: HeteroTimingMPNN,
+    device: torch.device,
+    npz_path: str,
+    K: int = 20,
+    save_pred: str | None = None,
+    *,
+    silent: bool = False,
+) -> dict[str, Any]:
+    """单次评估；silent=True 时不打印过程，仅返回指标字典。"""
     data = load_timing_graph(npz_path)
     data = data.to(device)
     with torch.no_grad():
@@ -168,24 +186,34 @@ def evaluate(
     fanout = data["tnode"].fanout.detach().cpu().numpy().reshape(-1)[:N]
     leaf_mask = (fanout == 0) & y_valid
     n_leaf = int(leaf_mask.sum())
-    print(f"\n--- 全图监督节点（y_valid）上指标（归一化到达时间）---", flush=True)
+
+    m_all: dict[str, float] | None = None
+    m_leaf: dict[str, float] | None = None
+
+    if not silent:
+        print(f"\n--- 全图监督节点（y_valid）上指标（归一化到达时间）---", flush=True)
     if y_valid.any():
         m_all = compute_regression_metrics(pred_norm_np[y_valid], y_arrival[y_valid])
-        print(format_metrics_line(m_all), flush=True)
+        if not silent:
+            print(format_metrics_line(m_all), flush=True)
     else:
-        print("(无 y_valid 节点)", flush=True)
+        if not silent:
+            print("(无 y_valid 节点)", flush=True)
 
-    print(f"--- 末节点（fanout==0 且 y_valid）：共 {n_leaf} 个点 ---", flush=True)
+    if not silent:
+        print(f"--- 末节点（fanout==0 且 y_valid）：共 {n_leaf} 个点 ---", flush=True)
     if n_leaf >= 2:
         m_leaf = compute_regression_metrics(pred_norm_np[leaf_mask], y_arrival[leaf_mask])
-        print(
-            f"排序相关: Kendall τ={m_leaf['tau']:.4f}  Spearman ρ={m_leaf['spearman_r']:.4f}  |  "
-            f"R²={m_leaf['r2']:.4f}  MAPE={m_leaf['mape']:.2f}%  "
-            f"MAE={m_leaf['mae']:.4f}  RMSE={m_leaf['rmse']:.4f}",
-            flush=True,
-        )
+        if not silent:
+            print(
+                f"排序相关: Kendall τ={m_leaf['tau']:.4f}  Spearman ρ={m_leaf['spearman_r']:.4f}  |  "
+                f"R²={m_leaf['r2']:.4f}  MAPE={m_leaf['mape']:.2f}%  "
+                f"MAE={m_leaf['mae']:.4f}  RMSE={m_leaf['rmse']:.4f}",
+                flush=True,
+            )
     else:
-        print("末节点可监督样本不足 2 个，跳过 τ / Spearman / R² / MAPE。", flush=True)
+        if not silent:
+            print("末节点可监督样本不足 2 个，跳过 τ / Spearman / R² / MAPE。", flush=True)
 
     cei, ctd = hetero_combined_edges(data)
     edge_index = cei.cpu().numpy()
@@ -203,7 +231,7 @@ def evaluate(
     z = np.load(npz_path, allow_pickle=False)
     try:
         true_path_nodes, true_crit, _ = true_critical_nodes_from_npz(
-            z, N, edge_index, tedge_delay, node_type, K
+            z, N, edge_index, tedge_delay, node_type, K, silent=silent
         )
     finally:
         z.close()
@@ -218,10 +246,11 @@ def evaluate(
     else:
         precision = float("nan")
 
-    print(f"True critical nodes : {len(true_path_nodes)}")
-    print(f"Predicted path nodes: {len(pred_nodes)}")
-    print(f"Coverage (Recall)   : {coverage:.3f}" if not np.isnan(coverage) else "Coverage (Recall)   : nan")
-    print(f"Precision           : {precision:.3f}" if not np.isnan(precision) else "Precision           : nan")
+    if not silent:
+        print(f"True critical nodes : {len(true_path_nodes)}")
+        print(f"Predicted path nodes: {len(pred_nodes)}")
+        print(f"Coverage (Recall)   : {coverage:.3f}" if not np.isnan(coverage) else "Coverage (Recall)   : nan")
+        print(f"Precision           : {precision:.3f}" if not np.isnan(precision) else "Precision           : nan")
 
     if save_pred:
         on_pred = np.zeros(N, dtype=np.int8)
@@ -237,19 +266,167 @@ def evaluate(
             pred_is_critical=on_pred,
             true_is_critical=true_is_critical,
         )
-        print(f"已保存 {out_path}")
+        if not silent:
+            print(f"已保存 {out_path}")
 
-    return (coverage, precision)
+    return {
+        "path": npz_path,
+        "coverage": float(coverage),
+        "precision": float(precision),
+        "m_all": m_all,
+        "m_leaf": m_leaf,
+        "n_leaf": n_leaf,
+    }
+
+
+def evaluate(
+    model_path: str,
+    npz_path: str,
+    K: int = 20,
+    save_pred: str | None = None,
+) -> dict[str, Any]:
+    """兼容旧用法：加载模型并评估单个 npz。"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_hetero_model(model_path, device)
+    print(f"文件: {npz_path}", flush=True)
+    return evaluate_one(model, device, npz_path, K=K, save_pred=save_pred, silent=False)
+
+
+def _nanmean(vals: list[float]) -> float:
+    a = np.asarray(vals, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    return float(a.mean())
+
+
+def _nanmean_metric(rows: list[dict[str, Any]], key: str, sub: str) -> float:
+    vals: list[float] = []
+    for r in rows:
+        d = r.get(key)
+        if d is None:
+            continue
+        v = d.get(sub)
+        if v is not None and isinstance(v, (int, float)) and math.isfinite(float(v)):
+            vals.append(float(v))
+    return _nanmean(vals)
+
+
+def evaluate_directory(
+    model_path: str,
+    data_dir: str,
+    K: int = 20,
+    save_pred_dir: str | None = None,
+    *,
+    quiet: bool = False,
+    max_files: int = 0,
+) -> None:
+    root = Path(data_dir)
+    paths = _find_npz_files(root)
+    if not paths:
+        raise SystemExit(f"目录下未找到 .npz: {root}")
+    if max_files > 0:
+        paths = paths[:max_files]
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_hetero_model(model_path, device)
+    print(f"目录评估: {root.resolve()}  共 {len(paths)} 个 .npz\n", flush=True)
+
+    rows: list[dict[str, Any]] = []
+    for i, p in enumerate(paths, start=1):
+        save_one = None
+        if save_pred_dir:
+            out_d = Path(save_pred_dir)
+            save_one = str(out_d / f"{p.stem}_pred.npz")
+        try:
+            if quiet:
+                row = evaluate_one(
+                    model, device, str(p), K=K, save_pred=save_one, silent=True
+                )
+                rows.append(row)
+                ma = row["m_all"]
+                tau_s = f"{ma['tau']:.4f}" if ma else "nan"
+                print(
+                    f"[{i}/{len(paths)}] {p.name}  cov={row['coverage']:.4f}  prec={row['precision']:.4f}  "
+                    f"tau_all={tau_s}",
+                    flush=True,
+                )
+            else:
+                print(f"\n{'=' * 72}\n[{i}/{len(paths)}] {p.resolve()}\n{'=' * 72}", flush=True)
+                row = evaluate_one(
+                    model, device, str(p), K=K, save_pred=save_one, silent=False
+                )
+                rows.append(row)
+        except Exception as ex:
+            print(f"[{i}/{len(paths)}] 跳过（错误）: {p} — {ex}", flush=True)
+
+    if not rows:
+        print("无成功评估的文件。", flush=True)
+        return
+
+    print(f"\n{'=' * 72}\n汇总（宏平均，按文件） 成功 {len(rows)}/{len(paths)} 个\n{'=' * 72}", flush=True)
+    print(
+        f"Coverage 均值: {_nanmean([r['coverage'] for r in rows]):.4f}  "
+        f"Precision 均值: {_nanmean([r['precision'] for r in rows]):.4f}",
+        flush=True,
+    )
+    for label, key in [("全图监督", "m_all"), ("末节点", "m_leaf")]:
+        if not any(r.get(key) for r in rows):
+            continue
+        print(
+            f"{label}:  tau={_nanmean_metric(rows, key, 'tau'):.4f}  "
+            f"spearman={_nanmean_metric(rows, key, 'spearman_r'):.4f}  "
+            f"r2={_nanmean_metric(rows, key, 'r2'):.4f}  "
+            f"mape={_nanmean_metric(rows, key, 'mape'):.2f}%  "
+            f"mae={_nanmean_metric(rows, key, 'mae'):.4f}  "
+            f"rmse={_nanmean_metric(rows, key, 'rmse'):.4f}",
+            flush=True,
+        )
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="评估 HeteroTimingMPNN：单文件或整目录 .npz")
     ap.add_argument("--model", type=str, default="model.pt")
-    ap.add_argument("--npz", type=str, required=True, help="单个 timing_graph.npz 路径")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--npz", type=str, default=None, help="单个 .npz 路径")
+    g.add_argument("--npz_dir", type=str, default=None, help="递归评估该目录下所有 .npz")
     ap.add_argument("--K", type=int, default=20)
-    ap.add_argument("--save_pred", type=str, default=None, help="可选：prediction.npz 输出路径")
+    ap.add_argument(
+        "--save_pred",
+        type=str,
+        default=None,
+        help="单文件模式：prediction 输出 .npz 路径",
+    )
+    ap.add_argument(
+        "--save_pred_dir",
+        type=str,
+        default=None,
+        help="目录模式：将每个图的预测保存为该目录下 {原名}_pred.npz",
+    )
+    ap.add_argument(
+        "--quiet",
+        action="store_true",
+        help="目录模式：每个文件只打印一行摘要；单文件模式勿用",
+    )
+    ap.add_argument(
+        "--max_files",
+        type=int,
+        default=0,
+        help="目录模式最多处理多少个文件（0 表示不限制）",
+    )
     args = ap.parse_args()
-    evaluate(args.model, args.npz, K=args.K, save_pred=args.save_pred)
+
+    if args.npz:
+        evaluate(args.model, args.npz, K=args.K, save_pred=args.save_pred)
+    else:
+        evaluate_directory(
+            args.model,
+            args.npz_dir,
+            K=args.K,
+            save_pred_dir=args.save_pred_dir,
+            quiet=args.quiet,
+            max_files=args.max_files,
+        )
 
 
 if __name__ == "__main__":
