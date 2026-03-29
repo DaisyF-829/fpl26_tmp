@@ -1,6 +1,7 @@
 """
-训练 TimingMPNN：递归加载 timing_graph.npz，MSE（y_valid 掩码），按验证集 Kendall τ 保存最优模型。
-标签与掩码由 data_loader 根据 tnode_rt_time 与 tnode_valid_mask 构建。
+训练 TimingMPNN：递归加载 .npz，MSE（y_valid 掩码），按验证集 Kendall τ 保存最优模型。
+默认按「文件」划分：同一目录下若干 npz，随机打乱后取一定比例整文件作为验证/测试集（与训练集无重叠）。
+若指定 --val_dir 则训练集与验证集来自不同目录，不再做比例划分。
 """
 
 from __future__ import annotations
@@ -24,9 +25,33 @@ def _find_npz_files(root: Path) -> list[Path]:
     paths: list[Path] = []
     if not root.is_dir():
         return paths
-    for p in root.rglob("timing_graph.npz"):
+    for p in root.rglob("*.npz"):
         paths.append(p)
     return sorted(paths)
+
+
+def _split_npz_paths_by_file(
+    all_paths: list[Path], *, val_frac: float, seed: int
+) -> tuple[list[Path], list[Path]]:
+    """整文件划分：val_frac 比例的 npz 作为验证集，其余为训练集。同一 npz 不会同时出现在两边。"""
+    n = len(all_paths)
+    if n == 0:
+        return [], []
+    if n == 1:
+        # 仅一个文件时无法做无重叠划分，验证与训练共用该文件（仅便于跑通流程）
+        return [all_paths[0]], [all_paths[0]]
+    vf = min(max(val_frac, 0.0), 0.99)
+    n_val = max(1, int(round(vf * n)))
+    if n_val >= n:
+        n_val = n - 1
+    rng = random.Random(seed)
+    order = list(range(n))
+    rng.shuffle(order)
+    val_set = set(order[:n_val])
+    train_paths = [all_paths[i] for i in order if i not in val_set]
+    val_paths_list = [all_paths[i] for i in order if i in val_set]
+    assert train_paths and val_paths_list
+    return train_paths, val_paths_list
 
 
 def train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device) -> float:
@@ -94,8 +119,19 @@ def eval_epoch(model: nn.Module, loader: DataLoader, device: torch.device) -> di
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_dir", type=str, required=True)
-    ap.add_argument("--val_dir", type=str, default=None)
+    ap.add_argument("--data_dir", type=str, required=True, help="递归收集其下所有 .npz")
+    ap.add_argument(
+        "--val_dir",
+        type=str,
+        default=None,
+        help="若指定：训练仅用 data_dir 下 npz，验证仅用 val_dir 下 npz（忽略 --val_frac）",
+    )
+    ap.add_argument(
+        "--val_frac",
+        type=float,
+        default=0.2,
+        help="未指定 val_dir 时：按 npz 文件个数划分，该比例为验证集文件占比（默认 0.2 即 20%%）",
+    )
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--hidden", type=int, default=128)
@@ -112,25 +148,40 @@ def main() -> None:
     data_root = Path(args.data_dir)
     all_paths = _find_npz_files(data_root)
     if not all_paths:
-        raise SystemExit(f"在 {data_root} 下未找到 timing_graph.npz")
+        raise SystemExit(f"在 {data_root} 下未找到 .npz")
 
     if args.val_dir:
         val_root = Path(args.val_dir)
         val_paths_list = _find_npz_files(val_root)
         if not val_paths_list:
-            raise SystemExit(f"在 {val_root} 下未找到 timing_graph.npz")
+            raise SystemExit(f"在 {val_root} 下未找到 .npz")
         train_paths = all_paths
         if not train_paths:
-            raise SystemExit(f"在 {data_root} 下未找到 timing_graph.npz")
+            raise SystemExit(f"在 {data_root} 下未找到 .npz")
+        print(
+            f"数据划分：目录模式 — 训练 {len(train_paths)} 个 npz（{data_root}），"
+            f"验证 {len(val_paths_list)} 个 npz（{val_root}）。",
+            flush=True,
+        )
     else:
-        idx = list(range(len(all_paths)))
-        random.shuffle(idx)
-        n_val = max(1, int(round(0.2 * len(all_paths))))
-        val_idx = set(idx[:n_val])
-        train_paths = [all_paths[i] for i in idx if i not in val_idx]
-        val_paths_list = [all_paths[i] for i in idx if i in val_idx]
-        if not train_paths:
-            train_paths, val_paths_list = val_paths_list[:-1], val_paths_list[-1:]
+        train_paths, val_paths_list = _split_npz_paths_by_file(
+            all_paths, val_frac=args.val_frac, seed=args.seed
+        )
+        print(
+            f"数据划分：按文件 — 共 {len(all_paths)} 个 npz，训练 {len(train_paths)} 个，"
+            f"验证 {len(val_paths_list)} 个（val_frac={args.val_frac}, seed={args.seed}）。",
+            flush=True,
+        )
+        if len(all_paths) == 1:
+            print(
+                "警告：目录下仅有 1 个 npz，训练集与验证集为同一文件，指标不能反映泛化。",
+                flush=True,
+            )
+        _show = min(5, len(val_paths_list))
+        if _show:
+            print("验证集 npz 示例（最多 5 个）:", flush=True)
+            for p in val_paths_list[:_show]:
+                print(f"  {p}", flush=True)
 
     train_data = [load_timing_graph(str(p)) for p in train_paths]
     val_data = [load_timing_graph(str(p)) for p in val_paths_list]
