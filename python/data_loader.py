@@ -1,5 +1,9 @@
 """
 将 C++ 导出的 timing_graph.npz 转为 torch_geometric.data.Data。
+
+- 按 tnode_valid_mask 为 False 的节点从图中删除，并重映射边。
+- 回归标签为 tnode_rt_time（归一化到 cpd）；y_valid 由 rt_time（有限且 >=0）推导，不使用 tnode_rt_valid。
+- 不读取 tnode_on_critical_path；y_critical 置为全 False（占位，不参与当前特征/损失）。
 """
 
 from __future__ import annotations
@@ -17,21 +21,22 @@ def _one_hot(indices: np.ndarray, num_classes: int) -> np.ndarray:
     return oh
 
 
-def _build_y_critical_from_top_paths(
-    top_path_node_ids: np.ndarray | None, num_nodes: int, K: int = 20
-) -> np.ndarray:
-    """并集：前 K 条 top path 上出现过的节点为 True。"""
-    mask = np.zeros(num_nodes, dtype=bool)
-    if top_path_node_ids is None or top_path_node_ids.size == 0:
-        return mask
-    k_use = min(K, int(top_path_node_ids.shape[0]))
-    for p in range(k_use):
-        row = top_path_node_ids[p]
-        for v in np.nditer(row):
-            vi = int(v)
-            if 0 <= vi < num_nodes:
-                mask[vi] = True
-    return mask
+def node_keep_indices(z, N: int) -> np.ndarray:
+    """
+    与 load_timing_graph 一致：返回保留的原始节点下标（升序）。
+    无 tnode_valid_mask 时保留全部节点。
+    """
+    if "tnode_valid_mask" not in z.files:
+        return np.arange(N, dtype=np.int64)
+    m = np.asarray(z["tnode_valid_mask"]).reshape(-1)[:N]
+    if m.dtype == np.bool_:
+        keep = m.copy()
+    else:
+        keep = m.astype(np.float32) != 0
+    idx = np.flatnonzero(keep)
+    if idx.size == 0:
+        raise ValueError("tnode_valid_mask 全为 False，过滤后无节点")
+    return idx.astype(np.int64)
 
 
 def load_timing_graph(npz_path: str) -> Data:
@@ -47,6 +52,9 @@ def load_timing_graph(npz_path: str) -> Data:
         raise KeyError(f"{npz_path} 缺少 tnode_type")
 
     N = int(tnode_type.shape[0])
+    keep_idx = node_keep_indices(z, N)
+    Nk = int(keep_idx.size)
+
     cpd = float(arr("critical_path_delay", np.array([1.0], dtype=np.float32))[0])
     if cpd <= 0:
         cpd = 1.0
@@ -59,17 +67,28 @@ def load_timing_graph(npz_path: str) -> Data:
     gh_denom = max(grid_h - 1, 1)
     grid_sum = float(grid_w + grid_h)
 
-    pl_time = arr("tnode_pl_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32)
-    pl_valid = arr("tnode_pl_arrival_mask", arr("tnode_pl_valid", np.zeros(N, dtype=np.int32)))
-    pl_valid = pl_valid.astype(np.float32).reshape(-1)[:N]
+    def take1d(a: np.ndarray | None, fill, dtype) -> np.ndarray:
+        if a is None:
+            x = np.full(N, fill, dtype=dtype)
+        else:
+            x = np.asarray(a).astype(dtype).reshape(-1)[:N]
+        return x[keep_idx]
 
-    tnode_x = arr("tnode_x", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
-    tnode_y = arr("tnode_y", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
-    fanin = arr("tnode_fanin", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
-    fanout = arr("tnode_fanout", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
-    topo = arr("tnode_topo_level", np.full(N, -1, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
-    net_hpwl_n = arr("tnode_net_hpwl", np.full(N, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:N]
-    net_fanout_n = arr("tnode_net_fanout", np.full(N, -1, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
+    pl_time = take1d(arr("tnode_pl_time"), -1.0, np.float32)
+    pl_raw = arr("tnode_pl_arrival_mask", arr("tnode_pl_valid", None))
+    if pl_raw is None:
+        pl_valid = np.zeros(Nk, dtype=np.float32)
+    else:
+        pl_valid = np.asarray(pl_raw).astype(np.float32).reshape(-1)[:N][keep_idx]
+
+    tnode_x = take1d(arr("tnode_x"), 0, np.float32)
+    tnode_y = take1d(arr("tnode_y"), 0, np.float32)
+    fanin = take1d(arr("tnode_fanin"), 0, np.float32)
+    fanout = take1d(arr("tnode_fanout"), 0, np.float32)
+    topo = take1d(arr("tnode_topo_level"), -1.0, np.float32)
+    net_hpwl_n = take1d(arr("tnode_net_hpwl"), -1.0, np.float32)
+    net_fanout_n = take1d(arr("tnode_net_fanout"), -1.0, np.float32)
+    tnode_type_k = np.asarray(tnode_type).reshape(-1)[:N][keep_idx].astype(np.int64)
 
     valid_topo = topo >= 0
     max_level = float(topo[valid_topo].max()) if valid_topo.any() else 0.0
@@ -85,7 +104,7 @@ def load_timing_graph(npz_path: str) -> Data:
     hpwl_n = np.where(net_hpwl_n >= 0, net_hpwl_n / grid_sum, 0.0).astype(np.float32)
     nf_n = np.where(net_fanout_n >= 0, np.log1p(np.maximum(net_fanout_n, 0)), 0.0).astype(np.float32)
 
-    type_oh = _one_hot(tnode_type.astype(np.int64), 5)
+    type_oh = _one_hot(tnode_type_k, 5)
     x_np = np.concatenate(
         [
             type_oh,
@@ -106,19 +125,50 @@ def load_timing_graph(npz_path: str) -> Data:
     tedge_src = arr("tedge_src")
     tedge_dst = arr("tedge_dst")
     if tedge_src is None or tedge_dst is None:
+        z.close()
         raise KeyError(f"{npz_path} 缺少 tedge_src / tedge_dst")
-    E = int(tedge_src.shape[0])
-    tedge_type = arr("tedge_type", np.zeros(E, dtype=np.uint64)).astype(np.int64).reshape(-1)[:E]
-    tedge_delay = arr("tedge_delay", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    manh = arr("tedge_manhattan_dist", np.full(E, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    e_hpwl = arr("tedge_net_hpwl", np.full(E, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    e_fanout = arr("tedge_net_fanout", np.full(E, -1, dtype=np.int32)).astype(np.float32).reshape(-1)[:E]
-    pmaxx = arr("tedge_path_max_chanx", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    pavgx = arr("tedge_path_avg_chanx", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    pmaxy = arr("tedge_path_max_chany", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
-    pavgy = arr("tedge_path_avg_chany", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
 
-    edge_index = np.stack([tedge_src.astype(np.int64), tedge_dst.astype(np.int64)], axis=0)
+    src_full = np.asarray(tedge_src, dtype=np.int64).reshape(-1)
+    dst_full = np.asarray(tedge_dst, dtype=np.int64).reshape(-1)
+    E_full = int(src_full.shape[0])
+    src_full = src_full[:E_full]
+    dst_full = dst_full[:E_full]
+
+    old_to_new = np.full(N, -1, dtype=np.int64)
+    old_to_new[keep_idx] = np.arange(Nk, dtype=np.int64)
+    ns = old_to_new[src_full]
+    nd = old_to_new[dst_full]
+    edge_ok = (ns >= 0) & (nd >= 0)
+    new_src = ns[edge_ok]
+    new_dst = nd[edge_ok]
+    edge_index = np.stack([new_src, new_dst], axis=0)
+
+    tedge_type = arr("tedge_type", np.zeros(E_full, dtype=np.uint64))
+    tedge_delay = arr("tedge_delay", np.zeros(E_full, dtype=np.float32))
+    manh = arr("tedge_manhattan_dist", np.full(E_full, -1.0, dtype=np.float32))
+    e_hpwl = arr("tedge_net_hpwl", np.full(E_full, -1.0, dtype=np.float32))
+    e_fanout = arr("tedge_net_fanout", np.full(E_full, -1, dtype=np.int32))
+    pmaxx = arr("tedge_path_max_chanx", np.zeros(E_full, dtype=np.float32))
+    pavgx = arr("tedge_path_avg_chanx", np.zeros(E_full, dtype=np.float32))
+    pmaxy = arr("tedge_path_max_chany", np.zeros(E_full, dtype=np.float32))
+    pavgy = arr("tedge_path_avg_chany", np.zeros(E_full, dtype=np.float32))
+
+    def take_edge(a: np.ndarray | None, fill, dtype) -> np.ndarray:
+        if a is None:
+            x = np.full(E_full, fill, dtype=dtype)
+        else:
+            x = np.asarray(a).astype(dtype).reshape(-1)[:E_full]
+        return x[edge_ok]
+
+    tedge_type = take_edge(tedge_type, 0, np.int64)
+    tedge_delay = take_edge(tedge_delay, 0.0, np.float32)
+    manh = take_edge(manh, -1.0, np.float32)
+    e_hpwl = take_edge(e_hpwl, -1.0, np.float32)
+    e_fanout = take_edge(e_fanout, -1.0, np.float32)
+    pmaxx = take_edge(pmaxx, 0.0, np.float32)
+    pavgx = take_edge(pavgx, 0.0, np.float32)
+    pmaxy = take_edge(pmaxy, 0.0, np.float32)
+    pavgy = take_edge(pavgy, 0.0, np.float32)
 
     delay_n = np.where(tedge_delay >= 0, tedge_delay / cpd, 0.0).astype(np.float32)
     manh_n = np.where(manh >= 0, manh / grid_sum, 0.0).astype(np.float32)
@@ -146,26 +196,25 @@ def load_timing_graph(npz_path: str) -> Data:
     )
     assert edge_attr_np.shape[1] == 12
 
-    rt_time = arr("tnode_rt_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:N]
-    y_valid = arr("tnode_rt_valid", np.zeros(N, dtype=np.int32)).astype(np.bool_).reshape(-1)[:N]
-    y_arrival = np.where(y_valid, rt_time / cpd, 0.0).astype(np.float32)
+    rt_time = arr("tnode_rt_time", np.full(N, -1.0, dtype=np.float32))
+    rt_time = np.asarray(rt_time, dtype=np.float32).reshape(-1)[:N][keep_idx]
+    y_valid_np = np.isfinite(rt_time) & (rt_time >= 0.0)
+    y_arrival = np.where(y_valid_np, rt_time / cpd, 0.0).astype(np.float32)
 
-    top_paths = arr("top_path_node_ids")
-    if top_paths is not None:
-        y_critical = _build_y_critical_from_top_paths(top_paths, N, K=20)
-    else:
-        crit = arr("tnode_on_critical_path", np.zeros(N, dtype=np.int8))
-        y_critical = crit.astype(np.bool_).reshape(-1)[:N].copy()
+    y_critical = np.zeros(Nk, dtype=np.bool_)
 
     data = Data(
         x=torch.from_numpy(x_np),
         edge_index=torch.from_numpy(edge_index).long(),
         edge_attr=torch.from_numpy(edge_attr_np),
         y_arrival=torch.from_numpy(y_arrival),
-        y_valid=torch.from_numpy(y_valid),
+        y_valid=torch.from_numpy(y_valid_np),
         y_critical=torch.from_numpy(y_critical),
         cpd=torch.tensor([cpd], dtype=torch.float32),
     )
-    data.node_type = torch.from_numpy(tnode_type.astype(np.int64))
+    data.node_type = torch.from_numpy(tnode_type_k)
     data.tedge_delay = torch.from_numpy(tedge_delay.astype(np.float32))
+    data.node_old_indices = torch.from_numpy(keep_idx.copy())
+
+    z.close()
     return data

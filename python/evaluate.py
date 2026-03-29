@@ -92,8 +92,19 @@ def evaluate(
     )
 
     z = np.load(npz_path, allow_pickle=False)
-    true_crit = z["tnode_on_critical_path"].astype(np.int8).reshape(-1)
-    true_path_nodes = set(int(i) for i in np.where(true_crit > 0)[0])
+    try:
+        N_full = int(np.asarray(z["tnode_type"]).reshape(-1).shape[0])
+        raw = z["tnode_on_critical_path"]
+        crit_full = np.asarray(raw, dtype=np.int8).reshape(-1)[:N_full]
+        old_ix = data.node_old_indices.detach().cpu().numpy()
+        true_crit = crit_full[old_ix]
+        true_path_nodes = set(int(i) for i in np.where(true_crit > 0)[0])
+    except Exception:
+        true_crit = np.zeros(int(data.num_nodes), dtype=np.int8)
+        true_path_nodes = set()
+        print("未使用 tnode_on_critical_path（无法读取或未启用），Coverage/Precision 参考意义有限。")
+    finally:
+        z.close()
 
     inter = pred_nodes & true_path_nodes
     if len(true_path_nodes) > 0:
@@ -116,7 +127,7 @@ def evaluate(
         for i in pred_nodes:
             if 0 <= i < N:
                 on_pred[i] = 1
-        true_is_critical = true_crit[:N].astype(np.int8)
+        true_is_critical = true_crit.astype(np.int8).reshape(-1)[:N]
         out_path = Path(save_pred)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(

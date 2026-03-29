@@ -1,5 +1,6 @@
 """
 训练 TimingMPNN：递归加载 timing_graph.npz，MSE（y_valid 掩码），按验证集 Kendall τ 保存最优模型。
+标签与掩码由 data_loader 根据 tnode_rt_time 与 tnode_valid_mask 构建。
 """
 
 from __future__ import annotations
