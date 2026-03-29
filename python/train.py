@@ -1,7 +1,8 @@
 """
 训练 HeteroTimingMPNN：HeteroData（4 类边），MSE（tnode.y_valid 掩码），按验证集 Kendall τ 保存最优模型。
-默认按「文件」划分：同一目录下若干 npz，随机打乱后取一定比例整文件作为验证/测试集（与训练集无重叠）。
-若指定 --val_dir 则训练集与验证集来自不同目录，不再做比例划分。
+默认从 data_dir 按 npz 文件三路划分：先 test，再 val，其余 train（无重叠）。
+--val_dir：验证集改来自单独目录（忽略 val_frac）；--test_dir：测试集改来自单独目录（忽略 test_frac）。
+训练结束后加载最优 checkpoint 对测试集跑一次 eval。
 """
 
 from __future__ import annotations
@@ -30,15 +31,14 @@ def _find_npz_files(root: Path) -> list[Path]:
     return sorted(paths)
 
 
-def _split_npz_paths_by_file(
+def _split_train_val_only(
     all_paths: list[Path], *, val_frac: float, seed: int
 ) -> tuple[list[Path], list[Path]]:
-    """整文件划分：val_frac 比例的 npz 作为验证集，其余为训练集。同一 npz 不会同时出现在两边。"""
+    """仅从同一目录划分 train / val（用于已指定独立 test_dir 时）。"""
     n = len(all_paths)
     if n == 0:
         return [], []
     if n == 1:
-        # 仅一个文件时无法做无重叠划分，验证与训练共用该文件（仅便于跑通流程）
         return [all_paths[0]], [all_paths[0]]
     vf = min(max(val_frac, 0.0), 0.99)
     n_val = max(1, int(round(vf * n)))
@@ -50,8 +50,55 @@ def _split_npz_paths_by_file(
     val_set = set(order[:n_val])
     train_paths = [all_paths[i] for i in order if i not in val_set]
     val_paths_list = [all_paths[i] for i in order if i in val_set]
-    assert train_paths and val_paths_list
+    if not train_paths:
+        train_paths, val_paths_list = val_paths_list[:-1], val_paths_list[-1:]
     return train_paths, val_paths_list
+
+
+def _split_npz_paths_by_file(
+    all_paths: list[Path], *, val_frac: float, test_frac: float, seed: int
+) -> tuple[list[Path], list[Path], list[Path]]:
+    """先划 test，再从剩余顺序中划 val，其余 train。同一 npz 只出现在一个集合。"""
+    n = len(all_paths)
+    if n == 0:
+        return [], [], []
+    rng = random.Random(seed)
+    order = list(range(n))
+    rng.shuffle(order)
+
+    tf = min(max(test_frac, 0.0), 0.99)
+    vf = min(max(val_frac, 0.0), 0.99)
+    n_test = max(1, int(round(tf * n)))
+    n_val = max(1, int(round(vf * n)))
+    if n_test + n_val >= n:
+        n_test = max(1, n // 5)
+        n_val = max(1, n // 5)
+    while n_test + n_val >= n and n > 2:
+        if n_test > 1:
+            n_test -= 1
+        elif n_val > 1:
+            n_val -= 1
+        else:
+            break
+
+    if n == 1:
+        p = all_paths[order[0]]
+        return [p], [p], [p]
+
+    test_set = set(order[:n_test])
+    val_set = set(order[n_test : n_test + n_val])
+    train_paths = [all_paths[i] for i in order if i not in test_set and i not in val_set]
+    val_paths_list = [all_paths[i] for i in order if i in val_set]
+    test_paths = [all_paths[i] for i in order if i in test_set]
+
+    if not train_paths and val_paths_list:
+        train_paths.append(val_paths_list.pop(0))
+    if not train_paths and test_paths:
+        train_paths.append(test_paths.pop(0))
+    if not val_paths_list and train_paths:
+        val_paths_list.append(train_paths.pop(-1))
+
+    return train_paths, val_paths_list, test_paths
 
 
 def train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device) -> float:
@@ -130,7 +177,19 @@ def main() -> None:
         "--val_frac",
         type=float,
         default=0.2,
-        help="未指定 val_dir 时：按 npz 文件个数划分，该比例为验证集文件占比（默认 0.2 即 20%%）",
+        help="未指定 val_dir 时：验证集占 data_dir 中 npz 比例（与 test 划分互斥于剩余部分，见三路划分）",
+    )
+    ap.add_argument(
+        "--test_frac",
+        type=float,
+        default=0.1,
+        help="从 data_dir 中划出的测试集比例（默认 0.1）；指定 --test_dir 时忽略",
+    )
+    ap.add_argument(
+        "--test_dir",
+        type=str,
+        default=None,
+        help="若指定：测试集来自该目录，不从 data_dir 中按 test_frac 划分",
     )
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -150,6 +209,8 @@ def main() -> None:
     if not all_paths:
         raise SystemExit(f"在 {data_root} 下未找到 .npz")
 
+    test_paths: list[Path]
+
     if args.val_dir:
         val_root = Path(args.val_dir)
         val_paths_list = _find_npz_files(val_root)
@@ -158,29 +219,60 @@ def main() -> None:
         train_paths = all_paths
         if not train_paths:
             raise SystemExit(f"在 {data_root} 下未找到 .npz")
-        print(
-            f"数据划分：目录模式 — 训练 {len(train_paths)} 个 npz（{data_root}），"
-            f"验证 {len(val_paths_list)} 个 npz（{val_root}）。",
-            flush=True,
-        )
-    else:
-        train_paths, val_paths_list = _split_npz_paths_by_file(
+        if args.test_dir:
+            test_root = Path(args.test_dir)
+            test_paths = _find_npz_files(test_root)
+            if not test_paths:
+                raise SystemExit(f"在 {test_root} 下未找到 .npz")
+            print(
+                f"数据划分：目录模式 — 训练 {len(train_paths)}（{data_root}），"
+                f"验证 {len(val_paths_list)}（{val_root}），测试 {len(test_paths)}（{test_root}）。",
+                flush=True,
+            )
+        else:
+            test_paths = []
+            print(
+                f"数据划分：目录模式 — 训练 {len(train_paths)} 个 npz（{data_root}），"
+                f"验证 {len(val_paths_list)} 个 npz（{val_root}）；未指定 --test_dir，无独立测试集。",
+                flush=True,
+            )
+    elif args.test_dir:
+        test_root = Path(args.test_dir)
+        test_paths = _find_npz_files(test_root)
+        if not test_paths:
+            raise SystemExit(f"在 {test_root} 下未找到 .npz")
+        train_paths, val_paths_list = _split_train_val_only(
             all_paths, val_frac=args.val_frac, seed=args.seed
         )
         print(
-            f"数据划分：按文件 — 共 {len(all_paths)} 个 npz，训练 {len(train_paths)} 个，"
-            f"验证 {len(val_paths_list)} 个（val_frac={args.val_frac}, seed={args.seed}）。",
+            f"数据划分：测试目录 — 训练 {len(train_paths)}，验证 {len(val_paths_list)}（均来自 {data_root}，"
+            f"val_frac={args.val_frac}），测试 {len(test_paths)}（{test_root}）。",
+            flush=True,
+        )
+    else:
+        train_paths, val_paths_list, test_paths = _split_npz_paths_by_file(
+            all_paths,
+            val_frac=args.val_frac,
+            test_frac=args.test_frac,
+            seed=args.seed,
+        )
+        print(
+            f"数据划分：三路 — 共 {len(all_paths)} 个 npz，训练 {len(train_paths)}，"
+            f"验证 {len(val_paths_list)}，测试 {len(test_paths)} "
+            f"（val_frac={args.val_frac}, test_frac={args.test_frac}, seed={args.seed}）。",
             flush=True,
         )
         if len(all_paths) == 1:
-            print(
-                "警告：目录下仅有 1 个 npz，训练集与验证集为同一文件，指标不能反映泛化。",
-                flush=True,
-            )
-        _show = min(5, len(val_paths_list))
+            print("警告：仅 1 个 npz，训练/验证/测试为同一文件。", flush=True)
+        _show = min(3, len(val_paths_list))
         if _show:
-            print("验证集 npz 示例（最多 5 个）:", flush=True)
+            print("验证集 npz 示例（最多 3 个）:", flush=True)
             for p in val_paths_list[:_show]:
+                print(f"  {p}", flush=True)
+        _show_t = min(3, len(test_paths))
+        if _show_t:
+            print("测试集 npz 示例（最多 3 个）:", flush=True)
+            for p in test_paths[:_show_t]:
                 print(f"  {p}", flush=True)
 
     train_data = [load_timing_graph(str(p)) for p in train_paths]
@@ -217,6 +309,27 @@ def main() -> None:
                 save_path,
             )
             print(f"  -> 保存最优模型 (tau={best_tau:.6f}) -> {save_path}")
+
+    if test_paths:
+        test_data = [load_timing_graph(str(p)) for p in test_paths]
+        test_loader = DataLoader(test_data, batch_size=args.batch, shuffle=False)
+        if save_path.is_file():
+            try:
+                ckpt = torch.load(save_path, map_location=device, weights_only=False)
+            except TypeError:
+                ckpt = torch.load(save_path, map_location=device)
+            model.load_state_dict(ckpt["model_state"])
+        else:
+            print(
+                f"警告：未找到已保存的最优模型 {save_path}，使用当前权重评估测试集。",
+                flush=True,
+            )
+        test_metrics = eval_epoch(model, test_loader, device)
+        print(
+            f"\n[Test]  mae={test_metrics['mae']:.6f}  "
+            f"rmse={test_metrics['rmse']:.6f}  tau={test_metrics['tau']:.6f}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
