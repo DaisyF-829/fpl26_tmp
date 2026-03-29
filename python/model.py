@@ -1,5 +1,24 @@
 """
-HeteroTimingMPNN：4 类有向边各自 edge_enc / edge_mlp；节点回归 + 全图 max-pool 后 graph_head 预测 cpd。
+异构时序图 MPNN（与 STA 有向传播一致）
+
+与文档 2.3.1–2.4 的对应关系
+--------------------------
+Step 1（逐类型消息）: 对边类型 k，先经 edge_enc 将原始边特征映射为 d 维 \\mathbf{e}_{uv}^{(k)}，
+再 m^{(k)} = MLP_msg^{(k)}([h_u, h_v, e^{(k)}])，其中 MLP_msg 为 Linear(3d→2d)→ReLU→Linear(2d→d)。
+
+Step 2（跨类型汇聚）: 对各类边在目标节点 v 上对消息求和，实现 a_v = Σ_k Σ_{u∈N^{(k)}(v)} m_{uv}^{(k)}
+（torch_scatter.scatter(..., reduce="sum") 到 dst）。
+
+Step 3（残差 + LayerNorm）: h^{(l+1)} = LayerNorm(h^{(l)} + MLP_upd([h^{(l)}, a^{(l)}]))，
+MLP_upd 为 Linear(2d→2d)→ReLU→Linear(2d→d)。
+
+2.3.2 传播方向: 仅沿有向边 u→v（edge_index 中 src→dst），不向反向边传播。
+
+2.4 回归头: \\hat{y}_v = MLP_reg(h^{(L)})，MLP_reg 为 Linear(d→d/2)→ReLU→Linear(d/2→1)，
+输出为归一化到达时间。训练时节点 MSE 仅在 y_valid 上计算（见 data_loader / train.py），
+目标为 t_v/CPD。
+
+扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 预测 CPD 标量，与节点损失加权求和（train.py）。
 """
 
 from __future__ import annotations
@@ -19,6 +38,8 @@ def _rel(k: int) -> tuple[str, str, str]:
 
 
 class HeteroMPNNLayer(nn.Module):
+    """单层 2.3.1：类型相关 MLP_msg、跨类型 sum 聚合、MLP_upd + 残差 + LayerNorm。"""
+
     def __init__(self, hidden_dim: int):
         super().__init__()
         h = hidden_dim
@@ -61,6 +82,8 @@ class HeteroMPNNLayer(nn.Module):
 
 
 class HeteroTimingMPNN(nn.Module):
+    """L 层 HeteroMPNNLayer + 2.4 节 MLP_reg；另含 graph_head（全图辅助任务）。"""
+
     def __init__(self, hidden_dim: int = 128, num_layers: int = 6):
         super().__init__()
         h = hidden_dim
