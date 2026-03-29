@@ -119,7 +119,8 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         pred, pred_graph = model(batch)
         mask = batch["tnode"].y_valid
-        cpd_tgt = batch.cpd.to(device).view(-1).to(dtype=pred_graph.dtype)
+        # 与 y_arrival = rt_time/cpd 一致：图辅助任务目标为 cpd/cpd = 1（勿用原始 cpd 量纲）
+        cpd_tgt = torch.ones_like(pred_graph)
         loss_graph = F.mse_loss(pred_graph, cpd_tgt)
         if mask.any():
             loss_node = crit(pred[mask], batch["tnode"].y_arrival[mask])
@@ -219,7 +220,7 @@ def main() -> None:
         "--graph_loss_weight",
         type=float,
         default=1.0,
-        help="全图 max-pool 预测 cpd 的 MSE 相对节点到达时间损失的权重（总 loss = 节点 + weight * 图）",
+        help="全图 max-pool 预测归一化 CPD（目标恒为 1，与 y_arrival 量纲一致）的 MSE 相对节点损失的权重（总 loss = 节点 + weight * 图）",
     )
     ap.add_argument("--save", type=str, default="model.pt")
     ap.add_argument("--seed", type=int, default=42)

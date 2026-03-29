@@ -18,7 +18,7 @@ MLP_upd 为 Linear(2d→2d)→ReLU→Linear(2d→d)。
 输出为归一化到达时间。训练时节点 MSE 仅在 y_valid 上计算（见 data_loader / train.py），
 目标为 t_v/CPD。
 
-扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 预测 CPD 标量，与节点损失加权求和（train.py）。
+扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 预测归一化 CPD（目标为 1，与 rt_time/cpd 量纲一致），与节点损失加权求和（train.py）。
 """
 
 from __future__ import annotations
@@ -124,6 +124,8 @@ class HeteroTimingMPNN(nn.Module):
             h = layer(h, batch, edge_embs)
         node_pred = self.reg_head(h).squeeze(-1)
         batch_vec = getattr(batch[NODE_KEY], "batch", None)
+        if batch_vec is None:
+            batch_vec = h.new_zeros(h.size(0), dtype=torch.long)
         g = global_max_pool(h, batch_vec)
         graph_pred = self.graph_head(g).squeeze(-1)
         return node_pred, graph_pred
