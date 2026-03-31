@@ -20,8 +20,9 @@ import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
 from data_loader import load_timing_graph
+from gnn import HETERO_CONV_MODELS
 from metrics import compute_regression_metrics, format_metrics_line
-from model import HeteroTimingMPNN
+from model import HeteroTimingMPNN, HeteroTimingMPNNMultiHop
 
 
 def _find_npz_files(root: Path) -> list[Path]:
@@ -119,9 +120,17 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         pred, pred_graph = model(batch)
         mask = batch["tnode"].y_valid
-        # 与 y_arrival = rt_time/cpd 一致：图辅助任务目标为 cpd/cpd = 1（勿用原始 cpd 量纲）
-        cpd_tgt = torch.ones_like(pred_graph)
-        loss_graph = F.mse_loss(pred_graph, cpd_tgt)
+        # 图级 graph_head：直接回归 CPD（用 log 空间更稳定），评估时不使用真值 CPD 参与预测计算
+        cpd = batch.cpd.detach().float().reshape(-1)
+        cpd = cpd.clamp(min=1e-12)
+        tgt = torch.log(cpd)
+        pred_g = pred_graph.float().reshape(-1)
+        # pred_graph 允许为标量或 [B]；对齐到 batch 大小
+        if pred_g.numel() == 1 and tgt.numel() > 1:
+            pred_g = pred_g.expand_as(tgt)
+        elif tgt.numel() == 1 and pred_g.numel() > 1:
+            tgt = tgt.expand_as(pred_g)
+        loss_graph = F.mse_loss(pred_g, tgt)
         if mask.any():
             loss_node = crit(pred[mask], batch["tnode"].y_arrival[mask])
             n = int(mask.sum().item())
@@ -213,6 +222,13 @@ def main() -> None:
         help="验证集 tau 连续多少个 epoch 未刷新最优则早停（仅在 epoch>=min_epochs 时生效）",
     )
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument(
+        "--model_type",
+        type=str,
+        default="mpnn",
+        choices=("mpnn", "mpnn_mh", "gcn", "gat", "sage", "gin"),
+        help="骨干：mpnn=异构 MPNN；gcn/gat/sage/gin=gnn 中平凡异构卷积对照（HeteroConv+各 conv）",
+    )
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--batch", type=int, default=4)
@@ -305,7 +321,16 @@ def main() -> None:
     val_data = [load_timing_graph(str(p)) for p in val_paths_list]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = HeteroTimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+    print(f"模型骨干: {args.model_type}（hidden={args.hidden}, layers={args.layers}）", flush=True)
+    if args.model_type in HETERO_CONV_MODELS:
+        conv_cls, model_class_name = HETERO_CONV_MODELS[args.model_type]
+        model = conv_cls(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+    elif args.model_type == "mpnn_mh":
+        model = HeteroTimingMPNNMultiHop(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+        model_class_name = "HeteroTimingMPNNMultiHop"
+    else:
+        model = HeteroTimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+        model_class_name = "HeteroTimingMPNN"
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     train_loader = DataLoader(train_data, batch_size=args.batch, shuffle=True)
@@ -337,7 +362,7 @@ def main() -> None:
                     "model_state": model.state_dict(),
                     "hidden": args.hidden,
                     "layers": args.layers,
-                    "model_class": "HeteroTimingMPNN",
+                    "model_class": model_class_name,
                     "graph_loss_weight": args.graph_loss_weight,
                 },
                 save_path,

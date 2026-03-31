@@ -30,7 +30,9 @@ def edge_type_key(k: int) -> tuple[str, str, str]:
 
 
 def hetero_combined_edges(data: HeteroData) -> tuple[torch.Tensor, torch.Tensor]:
-    """按 e0→e3 顺序拼接 edge_index 与 tedge_delay，与 data 同 device。"""
+    """
+    按 e0→e3 顺序拼接 edge_index 与 tedge_delay（评估/回溯用，不作为模型输入特征），与 data 同 device。
+    """
     device = data[NODE_KEY].x.device
     srcs: list[torch.Tensor] = []
     dsts: list[torch.Tensor] = []
@@ -38,18 +40,20 @@ def hetero_combined_edges(data: HeteroData) -> tuple[torch.Tensor, torch.Tensor]
     for k in range(NUM_EDGE_TYPES):
         rel = edge_type_key(k)
         ei = data[rel].edge_index
-        td = data[rel].tedge_delay
         if ei.numel() == 0:
             continue
         srcs.append(ei[0])
         dsts.append(ei[1])
-        dels.append(td)
+        td = getattr(data[rel], "tedge_delay", None)
+        if td is None:
+            td = torch.zeros(ei.size(1), dtype=torch.float32, device=device)
+        dels.append(td.to(device))
     if not srcs:
         z = torch.zeros(0, dtype=torch.long, device=device)
         return torch.stack([z, z]), torch.zeros(0, dtype=torch.float32, device=device)
     return (
         torch.stack([torch.cat(srcs), torch.cat(dsts)]),
-        torch.cat(dels),
+        torch.cat(dels) if dels else torch.zeros(torch.cat(srcs).numel(), dtype=torch.float32, device=device),
     )
 
 
@@ -156,6 +160,7 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     tedge_type = np.asarray(tedge_type, dtype=np.int64).reshape(-1)[:E]
     tedge_type = np.clip(tedge_type, 0, NUM_EDGE_TYPES - 1)
 
+    # 注意：tedge_delay 仅用于评估阶段的路径回溯/构造真值，不进入 edge_attr 以避免训练数据泄露
     tedge_delay = arr("tedge_delay", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
     manh = arr("tedge_manhattan_dist", np.full(E, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
     e_hpwl = arr("tedge_net_hpwl", np.full(E, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
@@ -165,7 +170,6 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     pmaxy = arr("tedge_path_max_chany", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
     pavgy = arr("tedge_path_avg_chany", np.zeros(E, dtype=np.float32)).astype(np.float32).reshape(-1)[:E]
 
-    delay_n = np.where(tedge_delay >= 0, tedge_delay / cpd, 0.0).astype(np.float32)
     manh_n = np.where(manh >= 0, manh / grid_sum, 0.0).astype(np.float32)
     eh_n = np.where(e_hpwl >= 0, e_hpwl / grid_sum, 0.0).astype(np.float32)
     ef_n = np.where(e_fanout >= 0, np.log1p(np.maximum(e_fanout, 0)), 0.0).astype(np.float32)
@@ -174,8 +178,9 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     pmy = np.log1p(np.maximum(pmaxy, 0)).astype(np.float32)
     pay = np.log1p(np.maximum(pavgy, 0)).astype(np.float32)
 
-    edge_attr_8 = np.stack([delay_n, manh_n, eh_n, ef_n, pmx, pax, pmy, pay], axis=1).astype(np.float32)
-    assert edge_attr_8.shape[1] == 8
+    # 删除 tedge_delay 以避免数据泄露：边特征不包含任何真实延迟/时序信息
+    edge_attr_7 = np.stack([manh_n, eh_n, ef_n, pmx, pax, pmy, pay], axis=1).astype(np.float32)
+    assert edge_attr_7.shape[1] == 7
 
     data = HeteroData()
     data[NODE_KEY].x = torch.from_numpy(x_np)
@@ -192,13 +197,13 @@ def load_timing_graph(npz_path: str) -> HeteroData:
         m = tedge_type == k
         if not np.any(m):
             data[rel].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data[rel].edge_attr = torch.empty((0, 8), dtype=torch.float32)
+            data[rel].edge_attr = torch.empty((0, 7), dtype=torch.float32)
             data[rel].tedge_delay = torch.empty((0,), dtype=torch.float32)
             continue
         sk = src_full[m]
         dk = dst_full[m]
         data[rel].edge_index = torch.from_numpy(np.stack([sk, dk])).long()
-        data[rel].edge_attr = torch.from_numpy(edge_attr_8[m].copy())
+        data[rel].edge_attr = torch.from_numpy(edge_attr_7[m].copy())
         data[rel].tedge_delay = torch.from_numpy(tedge_delay[m].astype(np.float32).copy())
 
     data.cpd = torch.tensor([cpd], dtype=torch.float32)
