@@ -231,7 +231,7 @@ def main() -> None:
     )
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--layers", type=int, default=6)
-    ap.add_argument("--batch", type=int, default=4)
+    ap.add_argument("--batch", type=int, default=2)
     ap.add_argument(
         "--graph_loss_weight",
         type=float,
