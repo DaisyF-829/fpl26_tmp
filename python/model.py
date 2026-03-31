@@ -256,3 +256,93 @@ class HeteroTimingMPNNMultiHop(nn.Module):
         g = global_max_pool(h, batch_vec)
         graph_pred = self.graph_head(g).squeeze(-1)
         return node_pred, graph_pred
+
+
+class HeteroTimingMPNNDelayProp(nn.Module):
+    """
+    两阶段架构：
+    阶段1：num_layers 层 HeteroMPNNLayer，学习局部异构结构特征。
+    阶段2：prop_steps 层 delay-weighted max 传播，用边的物理特征（7维）学一个标量权重
+           w = sigmoid(Linear(7→1)(edge_attr))，固定权重，每步复用。
+           每步：msg = h[src] * w → scatter_max → _ResidualFuse。
+    标量 gate 只计算一次，速度与 _k_hop_predecessor_agg 相当，但引入了物理延迟先验。
+    """
+
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 3, prop_steps: int = 9):
+        super().__init__()
+        h = hidden_dim
+        self.node_enc = nn.Sequential(
+            nn.Linear(14, h),
+            nn.ReLU(inplace=True),
+            nn.Linear(h, h),
+        )
+        self.edge_encs = nn.ModuleDict(
+            {
+                str(k): nn.Sequential(
+                    nn.Linear(7, h),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(h, h),
+                )
+                for k in range(NUM_EDGE_TYPES)
+            }
+        )
+        self.layers = nn.ModuleList([HeteroMPNNLayer(h) for _ in range(num_layers)])
+
+        # 标量 gate：edge_attr(7维) → 1个标量权重，所有 prop_steps 共享
+        self.delay_gate = nn.Linear(7, 1)
+
+        # 每步有独立的 fuse（保持各步可学习性），节点上计算，开销小
+        self.prop_fuses = nn.ModuleList([_ResidualFuse(h) for _ in range(prop_steps)])
+
+        self.reg_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+        self.graph_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+
+    def forward(self, batch: HeteroData) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.node_enc(batch[NODE_KEY].x)
+        edge_embs: dict[int, torch.Tensor] = {}
+        for k in range(NUM_EDGE_TYPES):
+            rel = _rel(k)
+            edge_embs[k] = self.edge_encs[str(k)](batch[rel].edge_attr)
+
+        # 阶段1：HeteroMPNN 局部传播
+        for layer in self.layers:
+            h = layer(h, batch, edge_embs)
+
+        # 阶段2：delay-weighted max 传播
+        # 合并 4 类边，预计算标量 gate（只算一次）
+        ei = _combined_edge_index(batch)
+        if ei.numel() > 0:
+            all_eattr: list[torch.Tensor] = []
+            for k in range(NUM_EDGE_TYPES):
+                rel = _rel(k)
+                ea = batch[rel].edge_attr
+                if ea.size(0) > 0:
+                    all_eattr.append(ea)
+            if all_eattr:
+                combined_eattr = torch.cat(all_eattr, dim=0)  # [E_total, 7]
+                w = torch.sigmoid(self.delay_gate(combined_eattr))  # [E_total, 1]
+            else:
+                w = torch.ones(ei.size(1), 1, device=h.device)
+
+            src, dst = ei[0], ei[1]
+            for fuse in self.prop_fuses:
+                msg = h[src] * w  # [E, h]，broadcast
+                agg = scatter(msg, dst, dim=0, dim_size=h.size(0), reduce="max")
+                agg = torch.where(torch.isfinite(agg), agg, torch.zeros_like(agg))
+                h = fuse(h, agg)
+
+        node_pred = self.reg_head(h).squeeze(-1)
+        batch_vec = getattr(batch[NODE_KEY], "batch", None)
+        if batch_vec is None:
+            batch_vec = h.new_zeros(h.size(0), dtype=torch.long)
+        g = global_max_pool(h, batch_vec)
+        graph_pred = self.graph_head(g).squeeze(-1)
+        return node_pred, graph_pred

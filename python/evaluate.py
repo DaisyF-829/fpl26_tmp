@@ -22,7 +22,7 @@ import torch.nn as nn
 from data_loader import hetero_combined_edges, load_timing_graph
 from gnn import HETERO_CONV_MODELS
 from metrics import compute_regression_metrics, format_metrics_line
-from model import HeteroTimingMPNN, HeteroTimingMPNNMultiHop
+from model import HeteroTimingMPNN, HeteroTimingMPNNDelayProp, HeteroTimingMPNNMultiHop
 
 # ckpt["model_class"] 字符串 -> 构造函数
 _TIMING_CONV_BY_SAVED_NAME: dict[str, type[nn.Module]] = {
@@ -227,6 +227,8 @@ def load_hetero_model(
         name = "HeteroTimingMPNN"
     elif model_type == "mpnn_mh":
         name = "HeteroTimingMPNNMultiHop"
+    elif model_type == "mpnn_delayprop":
+        name = "HeteroTimingMPNNDelayProp"
     elif model_type in HETERO_CONV_MODELS:
         name = HETERO_CONV_MODELS[model_type][1]
     else:
@@ -236,6 +238,8 @@ def load_hetero_model(
         model = conv_cls(hidden_dim=hidden, num_layers=layers).to(device)
     elif name == "HeteroTimingMPNNMultiHop":
         model = HeteroTimingMPNNMultiHop(hidden_dim=hidden, num_layers=layers).to(device)
+    elif name == "HeteroTimingMPNNDelayProp":
+        model = HeteroTimingMPNNDelayProp(hidden_dim=hidden, num_layers=layers).to(device)
     else:
         model = HeteroTimingMPNN(hidden_dim=hidden, num_layers=layers).to(device)
     model.load_state_dict(ckpt["model_state"])
@@ -566,7 +570,7 @@ def main() -> None:
         "--model_type",
         type=str,
         default="auto",
-        choices=("auto", "mpnn", "mpnn_mh", "gcn", "gat", "sage", "gin"),
+        choices=("auto", "mpnn", "mpnn_mh", "mpnn_delayprop", "gcn", "gat", "sage", "gin"),
         help="骨干：auto=读 checkpoint；mpnn/gcn/gat/sage/gin 强制指定（须与权重一致）",
     )
     g = ap.add_mutually_exclusive_group(required=True)

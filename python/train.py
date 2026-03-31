@@ -22,7 +22,7 @@ from torch_geometric.loader import DataLoader
 from data_loader import load_timing_graph
 from gnn import HETERO_CONV_MODELS
 from metrics import compute_regression_metrics, format_metrics_line
-from model import HeteroTimingMPNN, HeteroTimingMPNNMultiHop
+from model import HeteroTimingMPNN, HeteroTimingMPNNDelayProp, HeteroTimingMPNNMultiHop
 
 
 def _find_npz_files(root: Path) -> list[Path]:
@@ -226,7 +226,7 @@ def main() -> None:
         "--model_type",
         type=str,
         default="mpnn",
-        choices=("mpnn", "mpnn_mh", "gcn", "gat", "sage", "gin"),
+        choices=("mpnn", "mpnn_mh", "mpnn_delayprop", "gcn", "gat", "sage", "gin"),
         help="骨干：mpnn=异构 MPNN；gcn/gat/sage/gin=gnn 中平凡异构卷积对照（HeteroConv+各 conv）",
     )
     ap.add_argument("--hidden", type=int, default=128)
@@ -235,7 +235,7 @@ def main() -> None:
     ap.add_argument(
         "--graph_loss_weight",
         type=float,
-        default=1.0,
+        default=0.0,
         help="全图 max-pool 预测归一化 CPD（目标恒为 1，与 y_arrival 量纲一致）的 MSE 相对节点损失的权重（总 loss = 节点 + weight * 图）",
     )
     ap.add_argument("--save", type=str, default="model.pt")
@@ -328,6 +328,9 @@ def main() -> None:
     elif args.model_type == "mpnn_mh":
         model = HeteroTimingMPNNMultiHop(hidden_dim=args.hidden, num_layers=args.layers).to(device)
         model_class_name = "HeteroTimingMPNNMultiHop"
+    elif args.model_type == "mpnn_delayprop":
+        model = HeteroTimingMPNNDelayProp(hidden_dim=args.hidden, num_layers=args.layers).to(device)
+        model_class_name = "HeteroTimingMPNNDelayProp"
     else:
         model = HeteroTimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
         model_class_name = "HeteroTimingMPNN"
