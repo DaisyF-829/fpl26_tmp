@@ -4,6 +4,7 @@
 - 保留 npz 中全部 N 个 tnode，节点下标与 npz 一致（便于 evaluate 对齐）。
 - 4 种 tedge_type 拆成 4 类异构边 (tnode, e{k}, tnode)，边特征 8 维（无 etype one-hot）。
 - y_valid = tnode_valid_mask & (tnode_rt_time 有限且 >= 0)；y_arrival = rt_time/cpd（无效为 0）。
+- pl_max：有效 tnode_pl_time 的最大值（图头监督 log(cpd/pl_max)；无有效 PL 时取 cpd）。
 - 路径分析可用 hetero_combined_edges(data) 将 e0→e3 边与 delay 拼成一张同构图（不参与 batch 默认 collate）。
 """
 
@@ -89,6 +90,15 @@ def load_timing_graph(npz_path: str) -> HeteroData:
         pl_valid = np.zeros(N, dtype=np.float32)
     else:
         pl_valid = np.asarray(pl_raw).astype(np.float32).reshape(-1)[:N]
+
+    # 有效 PL 到达时间 pl_time 的最大值；图头监督 log(cpd/pl_max)，推理时 CPD_hat = exp(pred)*pl_max
+    pl_mask = pl_valid > 0
+    if pl_mask.any():
+        pl_max = float(np.max(pl_time[pl_mask]))
+    else:
+        pl_max = float(cpd)
+    if pl_max <= 0 or not np.isfinite(pl_max):
+        pl_max = float(cpd)
 
     tnode_x = arr("tnode_x", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
     tnode_y = arr("tnode_y", np.zeros(N, dtype=np.int32)).astype(np.float32).reshape(-1)[:N]
@@ -207,6 +217,7 @@ def load_timing_graph(npz_path: str) -> HeteroData:
         data[rel].tedge_delay = torch.from_numpy(tedge_delay[m].astype(np.float32).copy())
 
     data.cpd = torch.tensor([cpd], dtype=torch.float32)
+    data.pl_max = torch.tensor([pl_max], dtype=torch.float32)
 
     z.close()
     return data

@@ -120,10 +120,15 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         pred, pred_graph = model(batch)
         mask = batch["tnode"].y_valid
-        # 图级 graph_head：直接回归 CPD（用 log 空间更稳定），评估时不使用真值 CPD 参与预测计算
-        cpd = batch.cpd.detach().float().reshape(-1)
-        cpd = cpd.clamp(min=1e-12)
-        tgt = torch.log(cpd)
+        # 图级 graph_head：回归 log(cpd / pl_max)，pl_max 为有效 tnode_pl_time 的最大值；恢复 CPD = exp(pred)*pl_max
+        cpd = batch.cpd.detach().float().reshape(-1).clamp(min=1e-12)
+        pl_max = getattr(batch, "pl_max", None)
+        if pl_max is None:
+            pl_max = cpd
+        else:
+            pl_max = pl_max.detach().float().reshape(-1).clamp(min=1e-12)
+        ratio = (cpd / pl_max).clamp(min=1e-12)
+        tgt = torch.log(ratio)
         pred_g = pred_graph.float().reshape(-1)
         # pred_graph 允许为标量或 [B]；对齐到 batch 大小
         if pred_g.numel() == 1 and tgt.numel() > 1:
@@ -236,7 +241,7 @@ def main() -> None:
         "--graph_loss_weight",
         type=float,
         default=0.0,
-        help="全图 max-pool 预测归一化 CPD（目标恒为 1，与 y_arrival 量纲一致）的 MSE 相对节点损失的权重（总 loss = 节点 + weight * 图）",
+        help="全图 max-pool 回归 log(cpd/pl_max)（pl_max=有效 PL 到达时间最大值）的 MSE 相对节点损失的权重；恢复 CPD=exp(pred)*pl_max（总 loss = 节点 + weight * 图）",
     )
     ap.add_argument("--save", type=str, default="model.pt")
     ap.add_argument("--seed", type=int, default=42)

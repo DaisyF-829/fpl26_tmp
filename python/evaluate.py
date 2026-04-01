@@ -157,14 +157,19 @@ def true_critical_nodes_from_npz(
     return nodes, true_crit, "STA:tnode_rt_time+tedge_delay"
 
 
-def _graph_head_metrics(pred_graph: torch.Tensor, cpd_tensor: torch.Tensor) -> dict[str, float]:
+def _graph_head_metrics(
+    pred_graph: torch.Tensor,
+    cpd_tensor: torch.Tensor,
+    pl_max_tensor: torch.Tensor,
+) -> dict[str, float]:
     """
-    graph_head 直接回归 CPD（在 train.py 中用 log(cpd) 做 MSE）。
-    评估时：预测 CPD = exp(pred_graph)，真值 CPD = cpd_tensor。
-    注意：真值 CPD 仅用于计算误差指标，不参与预测值构造。
+    graph_head 在 train.py 中回归 log(cpd / pl_max)。
+    评估时：预测 CPD = exp(pred_graph) * pl_max；真值 CPD = cpd_tensor。
+    注意：真值 CPD / pl_max 仅用于指标，不参与预测值构造。
     """
     pred_log = pred_graph.detach().float().reshape(-1)
     cpd = cpd_tensor.detach().float().reshape(-1)
+    pl_max = pl_max_tensor.detach().float().reshape(-1)
     nan = float("nan")
     if pred_log.numel() == 0:
         return {
@@ -176,20 +181,22 @@ def _graph_head_metrics(pred_graph: torch.Tensor, cpd_tensor: torch.Tensor) -> d
             "rel_cpd_error_pct": nan,
         }
     cpd = cpd.clamp(min=1e-12)
+    pl_max = pl_max.clamp(min=1e-12)
 
-    # 对齐 batch 维度
     if pred_log.numel() == 1 and cpd.numel() > 1:
         pred_log = pred_log.expand_as(cpd)
     elif cpd.numel() == 1 and pred_log.numel() > 1:
         cpd = cpd.expand_as(pred_log)
+    if pl_max.numel() == 1:
+        pl_max = pl_max.expand_as(cpd)
 
-    tgt_log = torch.log(cpd)
+    tgt_log = torch.log((cpd / pl_max).clamp(min=1e-12))
     err = (pred_log - tgt_log)
     mae_log = float(err.abs().mean().item())
     rmse_log = float(torch.sqrt(err.pow(2).mean()).item())
     pred_log_mean = float(pred_log.mean().item())
 
-    pred_cpd = torch.exp(pred_log)
+    pred_cpd = torch.exp(pred_log) * pl_max
     pred_cpd_mean = float(pred_cpd.mean().item())
     cpd_mean = float(cpd.mean().item())
     rel = (pred_cpd - cpd).abs() / cpd * 100.0
@@ -273,7 +280,8 @@ def evaluate_one(
         pred_norm, pred_graph = model(data)
     pred_norm_np = pred_norm.detach().cpu().numpy()
     pred_arrival_ns = (pred_norm * data.cpd[0]).detach().cpu().numpy()
-    m_graph = _graph_head_metrics(pred_graph, data.cpd)
+    plm = getattr(data, "pl_max", data.cpd)
+    m_graph = _graph_head_metrics(pred_graph, data.cpd, plm)
 
     N = int(pred_arrival_ns.shape[0])
     y_arrival = data["tnode"].y_arrival.detach().cpu().numpy().reshape(-1)[:N]
@@ -286,14 +294,14 @@ def evaluate_one(
     m_leaf: dict[str, float] | None = None
 
     if not silent:
-        print("\n--- 图级 graph_head（回归 log(CPD)）---", flush=True)
+        print("\n--- 图级 graph_head（回归 log(CPD/pl_max)）---", flush=True)
         print(
             f"pred_log_mean={m_graph['pred_log_mean']:.6f}  MAE(log)={m_graph['mae_log']:.6f}  "
             f"RMSE(log)={m_graph['rmse_log']:.6f}",
             flush=True,
         )
         print(
-            f"真值 CPD={m_graph['cpd_true']:.6g}  预测 CPD=exp(pred_log)={m_graph['pred_cpd_mean']:.6g}  "
+            f"真值 CPD={m_graph['cpd_true']:.6g}  预测 CPD=exp(pred_log)*pl_max={m_graph['pred_cpd_mean']:.6g}  "
             f"相对误差={m_graph['rel_cpd_error_pct']:.4f}%",
             flush=True,
         )
@@ -377,13 +385,15 @@ def evaluate_one(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         pg0 = float(pred_graph.detach().float().reshape(-1)[0].item())
         cpd0 = float(data.cpd.reshape(-1)[0].item())
+        plm0 = float(getattr(data, "pl_max", data.cpd).reshape(-1)[0].item())
         np.savez(
             out_path,
             pred_arrival=pred_arrival_ns.astype(np.float32),
             pred_is_critical=on_pred,
             true_is_critical=true_is_critical,
-            pred_graph_log_cpd=np.float32(pg0),
-            pred_cpd=np.float32(np.exp(pg0)),
+            pred_graph_log_ratio=np.float32(pg0),
+            pl_max=np.float32(plm0),
+            pred_cpd=np.float32(np.exp(pg0) * plm0),
             cpd_true=np.float32(cpd0),
         )
         if not silent:

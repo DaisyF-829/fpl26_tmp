@@ -18,7 +18,7 @@ MLP_upd 为 Linear(2d→2d)→ReLU→Linear(2d→d)。
 输出为归一化到达时间。训练时节点 MSE 仅在 y_valid 上计算（见 data_loader / train.py），
 目标为 t_v/CPD。
 
-扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 预测归一化 CPD（目标为 1，与 rt_time/cpd 量纲一致），与节点损失加权求和（train.py）。
+扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 回归 log(cpd/pl_max)（pl_max 为有效 PL 到达时间最大值），与节点损失加权求和（train.py）；推理时 CPD_hat = exp(pred)*pl_max。
 """
 
 from __future__ import annotations
