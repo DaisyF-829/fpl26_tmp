@@ -124,23 +124,44 @@ In this paper, we propose a novel physical-aware retiming approach accelerated b
     \vspace{4pt}
 \end{figure}
 
-\section{Background and Preliminaries}
+
 % \subsection{Retiming}
 % Retiming is a classic sequential circuit optimization technique used to improve the clock frequency of a design by repositioning registers across combinational logic blocks without altering the circuit's functional behavior~\cite{ref:retime}. The primary objective of retiming is Clock Period Minimization, which focuses on reducing the maximum delay of any combinational path between two consecutive registers. By strategically moving registers, this optimization directly minimizes the circuit's minimum achievable clock period, thereby increasing its maximum operating frequency.
 
 % To formalize this process, a circuit is modeled as a directed graph, \(G=(V,E)\), where each vertex \(v \in V\) represents a combinational logic gate, and each directed edge \(e=(u,v) \in E\) represents a signal connection from gate $u$ to gate $v$ . Each vertex \(v\) is assigned a weight \(d(v)\) corresponding to its propagation delay. Edges are assigned weights,\(w(e)\), representing the number of registers on that connection. The core of retiming involves assigning an integer lag, \(r(v)\), to each vertex. This lag signifies moving \(r(v)\) registers from the output of gate $v$ to its inputs. Consequently, the register count on an edge \(e=(u,v)\) is updated to \(w'(e)= w ( e ) + r ( v ) - r ( u )\). For a valid retiming, all \(w'(e)\) must remain non-negative. The optimization problem is then to find a lag assignment \(r\) that minimizes the clock period or register count under the relevant constraints.
 
+\section{Background}
+
 \subsection{FPGA Routing and Static Timing Analysis}
 
-FPGA Static Timing Analysis (STA) comprises clock-to-Q delay, combinational delay, and net delay, as illustrated in Fig.~\ref{fig:rrg}. 
-Among these components, the first two are determined by cell characteristics, whereas net delay depends on the routing path and therefore can only be accurately determined after detailed routing.
+In FPGA static timing analysis (STA), arrival time is propagated along directed timing arcs from primary inputs or launching registers to downstream nodes. For each timing node, its arrival time is computed from the maximum arrival time of its fan-in nodes plus the delay of the corresponding timing arc. This arc delay consists of logic delay and net delay. Logic delay is determined by the mapped logic elements, while net delay is determined by the routed interconnect. Pre-routing timing estimation predicts node arrival time before detailed routing from placement features, congestion-aware signals, and post-placement timing priors.
 
-Unlike ASICs, where a net can be approximated as a single geometric connection with predictable delay behavior, an FPGA net is implemented by selecting a path through the fixed routing architecture. The architecture is typically modeled as a RRG, shown in Fig.~\ref{fig:rrg}, where nodes correspond to wires or pins and edges denote possible programmable connections. Routing therefore involves choosing a legal path for each net that satisfies
-architectural constraints and avoids resource conflicts.
 
-In practice, the delay of an FPGA net is influenced by the switch-box topology, local congestion, and the distance between the source and the sink. These effects result in strongly architecture- and congestion-dependent delay pattern, which cannot be captured by location-based models.  
-This highlights the need to model the RRG topology explicitly for accurate pre-routing predictions.
+\subsection{Pre-Routing Timing Estimation in FPGA Design}
 
+Existing FPGA pre-routing timing estimation methods can be divided into three categories. The first category predicts indirect routing-related proxies, such as wirelength, congestion, routability, or MUX usage, from placement-derived features. These methods are useful for global quality assessment, but they do not directly provide node-level timing information for critical-path analysis~\cite{wirelength,bbcong,conghls,fGREP,dl_routability,routenet,sta_rout_mux}.
+
+The second category predicts delay for specific targets. Hu \emph{et al.}~\cite{lutdelay} use machine learning to estimate delay during FPGA technology mapping. Ustun \emph{et al.}~\cite{hlspd} use graph neural networks to predict operation-level delay in FPGA HLS. Although effective in their target scenarios, these methods are tied to specific abstraction levels or design stages, and are therefore insufficient for general node-level or path-level timing estimation on placed netlists.
+
+The third category uses heuristic routing-cost estimation in FPGA CAD tools. For example, VTR uses architecture-aware routing lookahead to estimate delay and congestion during maze routing~\cite{air,vtr9}. These estimates are designed to guide routing search rather than to serve as accurate timing surrogates for node-level arrival-time prediction or critical-path analysis. Moreover, their congestion estimates are heuristic and do not directly model the actual timing variation introduced by final routing choices.
+
+Overall, existing FPGA methods either predict coarse proxies, address restricted delay subproblems, or provide routing heuristics. They do not provide general register-level timing prediction on placed netlists, which limits their ability to identify critical paths before detailed routing.
+
+\subsection{GNN-Based Timing Prediction}
+
+Graph neural networks (GNNs) learn node representations by aggregating information from graph neighbors~\cite{gnn}. A general GNN layer can be written as
+\begin{equation}
+\mathbf{h}_v^{(l+1)}
+=
+\phi\!\left(
+\mathbf{h}_v^{(l)},
+\operatorname{AGG}_{u\in\mathcal{N}(v)}
+\psi\!\left(\mathbf{h}_v^{(l)},\mathbf{h}_u^{(l)},\mathbf{e}_{uv}\right)
+\right),
+\end{equation}
+where \(\mathbf{h}_v^{(l)}\) is the representation of node \(v\) at layer \(l\), \(\mathcal{N}(v)\) denotes its neighbors, and \(\mathbf{e}_{uv}\) denotes edge features.
+
+This formulation is suitable for timing analysis because arrival time is propagated along directed timing arcs and depends on both local delays and graph topology. GNN-based timing predictors have been studied in ASIC design~\cite{timinggcn,letime,gattiming,preroutegnn}. However, FPGA pre-routing timing estimation still lacks a predictor explicitly designed on the timing graph of a placed netlist. This gap motivates a graph-based predictor that combines timing propagation with placement-derived physical information.
 % \subsection{GNN}
 
 % GNNs are models designed for graph-structured data~\cite{gnn}. Through message passing, GNNs aggregate features from neighboring nodes and iteratively update node representations, capturing complex dependencies within the graph. By stacking multiple layers, the model gains a broader receptive field, enabling it to capture dependencies across larger portions of the graph. The message-passing operation can be expressed as follows:
@@ -420,102 +441,94 @@ edge features:
 \rho^{\mathrm{edge}}_b.
 \end{equation}
 
-\subsection{Timing Propagation Network}
-
 Given a timing graph $\mathcal{G}=\left(\mathcal{V}, \left\{\mathcal{E}^{(k)}\right\}_{k=0}^{3}\right)$,
 where $\mathcal{V}$ denotes the set of timing nodes and $\mathcal{E}^{(k)}$
-denotes the directed edge set of relation type $k$.Each node $v\in\mathcal{V}$ is
-associated with a node feature vector $\mathbf{x}_v$, and each directed
+denotes the directed edge set of relation type $k$, each node $v\in\mathcal{V}$
+is associated with a node feature vector $\mathbf{x}_v$, and each directed
 edge $(u,v)\in\mathcal{E}^{(k)}$ is associated with an edge feature
-vector $\mathbf{a}_{uv}^{(k)}$. The goal is to
-predict the normalized arrival time for each node and the critical path
-delay (CPD) of the whole graph.
+vector $\mathbf{a}_{uv}^{(k)}$. The goal is to predict the normalized arrival
+time for each node and the critical path delay (CPD) of the whole graph.
 
-To process this graph, we use a \emph{Timing Propagation Network} (TPN),
-which performs directed message passing over the four edge types and
-produces both node-level and graph-level outputs. Specifically, the
-network predicts the normalized arrival time of each node and the CPD of
-the entire timing graph.
+To process this graph, we use a Timing Propagation Network (TPN).
+TPN adopts a two-stage architecture. The first stage learns local
+heterogeneous structural representations from multi-type timing edges.
+The second stage performs delay-weighted max propagation to model
+long-range timing dependency. The network produces both node-level and
+graph-level outputs.
 
-\subsubsection{Input encoding}
-We first project raw node and edge features into a shared latent space.
-For each node $v$ and each edge $(u,v)\in\mathcal{E}^{(k)}$, the encoded
-representations are given by the equations below.
+\subsection{Timing Propagation Network}
+
+Given a timing graph
+\(
+\mathcal{G}=\left(\mathcal{V}, \left\{\mathcal{E}^{(k)}\right\}_{k=0}^{3}\right),
+\)
+where \(\mathcal{V}\) denotes the set of timing nodes and \(\mathcal{E}^{(k)}\)
+denotes the directed edge set of relation type \(k\), each node
+\(v\in\mathcal{V}\) is associated with a node feature vector
+\(\mathbf{x}_v\), and each directed edge \((u,v)\in\mathcal{E}^{(k)}\)
+is associated with an edge feature vector \(\mathbf{a}_{uv}^{(k)}\).
+The goal is to predict the normalized arrival time of each node and the
+critical path delay (CPD) of the whole graph.
+We use a Timing Propagation Network (TPN) for this task. TPN adopts
+a two-stage architecture. 
+
+The first stage applies several heterogeneous
+message-passing layers to learn local representations from multi-type
+timing edges. Raw node features are first projected by a shared node MLP,
+while raw edge features are projected by relation-specific edge MLPs:
 \begin{equation}
-\mathbf{h}_v^{(0)}=\mathrm{MLP}_{\mathrm{node}}(\mathbf{x}_v)\in\mathbb{R}^{d},
+\mathbf{h}_v^{(0)}=\mathrm{MLP}_{\mathrm{node}}(\mathbf{x}_v),
 \end{equation}
 \begin{equation}
-\mathbf{e}_{uv}^{(k)}=\mathrm{MLP}_{\mathrm{enc}}^{(k)}\!\left(\mathbf{a}_{uv}^{(k)}\right)\in\mathbb{R}^{d},
+\mathbf{e}_{uv}^{(k)}=\mathrm{MLP}_{\mathrm{edge}}^{(k)}(\mathbf{a}_{uv}^{(k)}),
 \end{equation}
+where \(\mathrm{MLP}_{\mathrm{edge}}^{(k)}\) has independent parameters for
+each edge type \(k\). The encoded node and edge features are then fed
+into the following heterogeneous message-passing layers.
 
-\subsubsection{Directed edge-aware propagation}
-TPN stacks $L$ propagation layers. At layer $l$, for each incoming edge $(u,v)\in\mathcal{E}^{(k)}$, we compute a relation-aware message as
+The second stage performs delay-weighted max propagation to model
+long-range timing dependency. For each directed edge
+\((u,v)\), we compute a scalar gate from its edge representation using a
+shared trainable linear layer:
 \begin{equation}
-\mathbf{m}_{uv}^{(k,l)}
+w_{uv}=g(\mathbf{e}_{uv}^{(k)})=\sigma\!\left(\mathbf{W}_{g}\mathbf{e}_{uv}^{(k)}+b_{g}\right),
+\end{equation}
+where \(\mathbf{W}_{g}\) and \(b_{g}\) are learnable parameters, and \(\sigma(\cdot)\) is the sigmoid
+function. The same gate \(w_{uv}\) is reused across all propagation
+steps.
+
+Let \(\tilde{\mathbf{h}}_v^{(t)}\) denote the node representation at
+propagation step \(t\). For \(t=1,\dots,T\), one propagation step is
+defined as
+\begin{equation}
+\mathbf{a}_v^{(t)}
 =
-\mathrm{MLP}_{\mathrm{msg}}^{(k)}
-\!\left(
-\left[
-\mathbf{h}_u^{(l)} \Vert \mathbf{h}_v^{(l)} \Vert \mathbf{e}_{uv}^{(k)}
-\right]
+\max_{u\in\mathrm{Pred}(v)}
+\left(
+w_{uv}\,\tilde{\mathbf{h}}_u^{(t-1)}
 \right),
 \end{equation}
-where $\Vert$ denotes concatenation. Unlike homogeneous graph encoders that aggregate only neighboring node states, this formulation conditions each message on the source node, the target node, and the embedded edge attributes. As a result, the propagated information is explicitly aware of both timing direction and edge-level physical context.
-
-For node $v$, messages from all incoming neighbors are aggregated by
 \begin{equation}
-\mathbf{a}_v^{(l)}
+\tilde{\mathbf{h}}_v^{(t)}
 =
-\sum_{k=0}^{3}\sum_{u\in\mathcal{N}^{(k)}(v)}
-\mathbf{m}_{uv}^{(k,l)},
-\end{equation}
-where
-\[
-\mathcal{N}^{(k)}(v)=\{u\mid (u,v)\in\mathcal{E}^{(k)}\}
-\]
-denotes the set of predecessors of $v$ under relation type $k$. We use summation as the aggregation operator because it is permutation-invariant and naturally accumulates the influence of multiple fanin dependencies.
-
-The hidden state of node $v$ is then updated as
-\begin{equation}
-\mathbf{h}_v^{(l+1)}
-=
-\mathrm{LayerNorm}
+\mathrm{Fuse}^{(t)}
 \!\left(
-\mathbf{h}_v^{(l)}
-+
-\mathrm{MLP}_{\mathrm{upd}}
-\!\left(
-\left[
-\mathbf{h}_v^{(l)} \Vert \mathbf{a}_v^{(l)}
-\right]
-\right)
-\right).
+\tilde{\mathbf{h}}_v^{(t-1)},\mathbf{a}_v^{(t)}
+\right),
 \end{equation}
-The residual connection improves optimization stability in deep propagation, while layer normalization mitigates scale variation caused by different node degrees and message magnitudes.
+where \(\mathrm{Pred}(v)\) denotes the set of predecessors of \(v\) over
+all edge types, and \(\mathrm{Fuse}^{(t)}\) is a step-specific residual
+fusion module with independent learnable parameters. In each step, the
+source-node representation is first scaled by the edge gate, then
+aggregated by element-wise max over all incoming edges, and finally fused
+with the previous node state.
 
-This propagation mechanism is consistent with the causal structure of static timing analysis, where the arrival time at node $v$ is determined by its predecessors and the delays on incoming edges:
-\begin{equation}
-t_v=\max_{u\in\mathrm{pred}(v)}\left(t_u+d_{uv}\right).
-\end{equation}
-Although TPN does not explicitly hard-code the max operator, its directed edge-aware propagation is designed to serve as a learnable approximation to this timing accumulation process.
 
-\subsubsection{Node-level and graph-level prediction}
-After $L$ propagation layers, TPN produces both node-level and graph-level outputs. For each node $v$, a regression head predicts its normalized arrival time:
-\begin{equation}
-\hat{y}_v=\mathrm{MLP}_{\mathrm{arr}}(\mathbf{h}_v^{(L)}).
-\end{equation}
-In parallel, a graph-level readout is applied to the final node representations to obtain a global graph embedding
-\begin{equation}
-\mathbf{h}_{\mathcal{G}}=\mathrm{Readout}\bigl(\{\mathbf{h}_v^{(L)}\mid v\in\mathcal{V}\}\bigr),
-\end{equation}
-which is then mapped to the predicted critical path delay:
-\begin{equation}
-\widehat{\mathrm{CPD}}=\mathrm{MLP}_{\mathrm{cpd}}(\mathbf{h}_{\mathcal{G}}).
-\end{equation}
+After propagation, TPN produces both node-level and graph-level outputs.
+A node-level MLP predicts the normalized arrival time for each node. For
+graph-level prediction, max pooling is applied over all final node
+embeddings, followed by a graph-level MLP to predict CPD.
 
-The two outputs play complementary roles. The node-level prediction captures the relative timing distribution within a design, which is important for identifying critical nodes and preserving timing order. The graph-level prediction, in contrast, provides supervision on the absolute timing scale of the whole circuit.
-
-\subsubsection{Training objective}
 To jointly supervise the two outputs, we define the node-level loss as
 \begin{equation}
 \mathcal{L}_{\mathrm{node}}
@@ -523,27 +536,29 @@ To jointly supervise the two outputs, we define the node-level loss as
 \frac{1}{|\mathcal{V}|}
 \sum_{v\in\mathcal{V}}
 \left(
-\hat{y}_v-\frac{t_v}{\mathrm{CPD}}
+\hat{y}_v-\frac{t_v}{t_{\max}^{\mathrm{pl}}}
 \right)^2,
 \end{equation}
-where the target arrival time is normalized by the graph-level CPD to reduce scale variation across circuits. The graph-level loss is defined as
-\begin{equation}
+where \(t_v\) denotes the target arrival time of node \(v\), and
+\(t_{\max}^{\mathrm{pl}}=\max_{u\in\mathcal{V}} t_u^{\mathrm{pl}}\) is the
+maximum post-placement arrival-time prior in the graph. The graph-level
+loss is defined as
+\[
 \mathcal{L}_{\mathrm{cpd}}
 =
 \left(
 \widehat{\mathrm{CPD}}-\mathrm{CPD}
 \right)^2.
-\end{equation}
+\]
 The overall objective is
-\begin{equation}
+\[
 \mathcal{L}
 =
 \mathcal{L}_{\mathrm{node}}
 +
 \alpha\,\mathcal{L}_{\mathrm{cpd}},
-\end{equation}
-where $\alpha>0$ is a scaling coefficient balancing node-level supervision and graph-level supervision. A larger $\alpha$ places more emphasis on recovering the absolute timing scale of the whole graph, whereas a smaller $\alpha$ biases training toward finer modeling of the relative timing distribution within each circuit.
-
+\]
+where \(\alpha>0\) balances node-level and graph-level supervision.
 
 % \section{GAE-enhanced Timing Predictor}
 
