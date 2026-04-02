@@ -9,25 +9,24 @@
 \usepackage{threeparttable}
 % \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
 \usepackage{algorithm}
-\usepackage{algorithmic}
+
 \usepackage{algpseudocode}
+\usepackage{textcomp}
 \usepackage{bbding}
 \usepackage{amsmath}
 \usepackage{graphicx}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 
-
+\algrenewcommand\alglinenumber[1]{\scriptsize #1:}
 
 \pagestyle{empty}
-\setlength{\textfloatsep}{1pt} 
-\setlength{\floatsep}{1pt}
-\setlength{\abovecaptionskip}{0.2cm}
-% 减小公式与上文的间距
-\setlength\abovedisplayskip{0pt}
-% 减小公式与下文的间距
-\setlength\belowdisplayskip{0pt}
-% \addtolength{\topmargin}{-0.47in} 
-% \addtolength{\textheight}{0.42in} 
-% %% \BibTeX command to typeset BibTeX logo in the docs
+\setlength{\textfloatsep}{3pt plus 1pt minus 1pt}
+\setlength{\floatsep}{6pt plus 1pt minus 1pt}
+\setlength{\intextsep}{6pt plus 1pt minus 1pt}
+
+\renewcommand{\arraystretch}{1}
 \AtBeginDocument{%
   \providecommand\BibTeX{{%
     Bib\TeX}}}
@@ -39,11 +38,7 @@
 \maketitle
 
 \begin{abstract}
-% Traditional FPGA retiming optimization is done during logic synthesis without accounting for physical timing constraints, resulting in suboptimal performance when routing delays are considered. Although the full place-and-route (P\&R) flow provides accurate timing, its high computational cost makes it impractical for iterative optimization.
-% This paper proposes a novel physical-aware retiming approach that incorporates a pre-routing timing predictor.
-% Specifically, we partition the Routing Resource Graph (RRG) into intra-tile subgraphs and employ a pre-trained Graph AutoEncoder to learn both local node embeddings and global tile embeddings. The learned embeddings are integrated with features extracted from the timing graph and the physical placement of nets to predict net delays, arrival times, and the critical paths.
-% Leveraging the predictions, we evaluate the retiming moves along them and guide ABC's heuristic to target the true post-routing bottlenecks, optimizing timing without requiring repeated P\&R runs.
-% Our predictor, incorporated into VTR9, is validated on the MCNC and VTR benchmarks, achieving an $R^2$ of 0.90 for arrival time prediction of the endpoints and up to 56x speedup for large circuits. Experiments show an average 8\% improvement in maximum frequency over ABC’s logic-only retiming. This physical-aware retiming bridges the gap between logic and physical optimization, improving timing in modern FPGA design flows.
+
 
 
 Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by logic structure, placement, routing-resource constraints, and congestion. Existing early-stage methods often rely on coarse proxies or simplified delay models, which limits their usefulness for node-level timing analysis and critical-path identification before detailed routing.
@@ -60,14 +55,72 @@ GNN, STA, Timing Prediction
 
 
 
+
+
+
+
 \section{Introduction}
 
-FPGA-based systems have become central to modern hardware acceleration, offering high flexibility and performance. Retiming is a fundamental sequential optimization technique that reduces critical-path logic depth by relocating registers across combinational logic blocks~\cite{ref:retime}.
+Field-programmable gate arrays (FPGAs) are widely used for hardware
+acceleration due to their flexibility and strong domain-specific
+performance. As FPGA designs continue to scale, timing closure has
+become a major challenge in the CAD flow. Many timing-driven
+optimizations, such as logic restructuring, placement refinement, and
+sequential optimization, must be performed before detailed routing.
+Therefore, accurate pre-routing timing prediction is highly desirable,
+since it can provide early timing guidance without incurring the cost of
+iterative routing.
 
-Despite its effectiveness in early design stages, traditional retiming is performed without knowledge of physical timing constraints, and thus relies on overly simplified, logic-only delay models~\cite{ref:abcret}. Moreover, the routing delays can account for more than half of the total critical-path delay~\cite{ref:route_delay} in modern FPGAs. Consequently, logic-only retiming often misidentifies the true bottlenecks and leads to suboptimal $F_\text{max}$ improvements. These limitations motivate the need for physical-aware retiming methods that integrate logic synthesis with realistic timing behaviors induced by placement and routing.
+Pre-routing timing prediction in FPGAs is challenging because timing is
+jointly determined by logic delay, placement, and the
+architecture-constrained routing fabric. In particular, routing delay
+can contribute a substantial portion of the critical-path delay in
+modern FPGAs~\cite{ref:route_delay}, making logic-only estimation
+insufficient for identifying true timing bottlenecks. As summarized in
+Table~\ref{tab:related}, most prior FPGA learning-based methods focus on
+indirect objectives or restricted timing targets, rather than directly
+predicting arrival time for timing analysis. A recent work by Dai
+\emph{et al.}~\cite{dai2025rrg_gae} took an important step toward FPGA
+pre-routing arrival-time prediction. However, its explicit all-net
+modeling can still incur considerable overhead on large-scale circuits,
+and its training objective is not fully end-to-end on arrival time.
 
-Several approaches have emerged to address this challenge. One strategy involves performing complete placement and routing iterations during retiming optimization~\cite{ref_iterret}. While this methodology delivers highly accurate timing information, it imposes prohibitive computational overhead, with individual P\&R iterations requiring hours to days for large-scale FPGA designs. This computational burden renders iterative retiming optimization impractical, particularly in complex systems requiring multiple design iterations.
-Alternative research efforts have explored latch-based designs~\cite{ref:latret} and physical-aware retiming methodologies that incorporate post-placement timing information for enhanced optimization accuracy. However, these approaches often struggle to capture the full complexity of routing effects~\cite{b3}, either limiting analysis to local routing or employing oversimplified delay models such as those used in retiming-based timing analysis (RTA)~\cite{ref:rta}, which introduce significant prediction inaccuracies through simplified timing graph representations. 
+In this work, we propose a design-aware pre-routing arrival-time
+prediction framework for FPGA designs based on the post-placement timing
+graph. Our method directly models timing dependency at the register
+level and incorporates placement-derived and architecture-aware physical
+features, enabling the predictor to capture both circuit structure and
+FPGA-specific timing characteristics before detailed routing. Compared
+with prior FPGA timing predictors, our framework directly targets
+arrival time while avoiding the heavy cost of explicit all-net
+modeling, making it more practical and scalable for large designs.
+Experimental results show that the proposed predictor achieves accurate
+pre-routing arrival-time estimation across diverse circuits and
+implementation settings. As a case study, we further demonstrate its
+effectiveness as a timing surrogate for downstream applications such as
+physical-aware retiming.
+
+The main contributions of this work are summarized as follows:
+\begin{itemize}
+    \item We formulate FPGA pre-routing timing prediction as a
+    design-aware arrival-time estimation problem on the post-placement
+    timing graph, targeting a timing quantity directly relevant to
+    register-level performance analysis.
+
+    \item We propose an FPGA-specific prediction framework that combines
+    graph-structured timing dependency with placement-derived and
+    architecture-aware physical features for accurate pre-routing timing
+    modeling.
+
+    \item We design the framework to learn arrival time in an end-to-end
+    fashion without relying on explicit all-net modeling, improving its
+    scalability to large circuits.
+
+    \item We demonstrate that the proposed predictor generalizes across
+    diverse circuits and implementation settings, and can serve as an
+    effective timing surrogate for downstream timing-driven applications
+    such as physical-aware retiming.
+\end{itemize}
 
 \begin{table}[t]
 \centering
@@ -83,7 +136,6 @@ Alternative research efforts have explored latch-based designs~\cite{ref:latret}
 \begin{tabular}[c]{@{}c@{}}\textbf{Design-}\\\textbf{Aware}\end{tabular} &
 \textbf{Metric} \\
 \midrule
-
 \cite{WCPNet,wirelength} & FPGA & Circuit-level & \CheckmarkBold & Wirelength \\
 \cite{bbcong,conghls,fGREP} & FPGA & Region-level & \CheckmarkBold & Congestion \\
 \cite{dl_routability,routenet,sta_rout_mux} & FPGA & Circuit-level & \CheckmarkBold & Routability \\
@@ -91,6 +143,7 @@ Alternative research efforts have explored latch-based designs~\cite{ref:latret}
 \cite{fpga_ml_delay} & FPGA & Net-level & \XSolidBrush & Net delay \\
 \cite{air} & FPGA & Net-level & \XSolidBrush & Routing cost \\
 \cite{timinggcn,letime,gattiming,preroutegnn} & ASIC & Cell-level & \CheckmarkBold & \textbf{Arrival Time} \\
+\cite{dai2025rrg_gae} & FPGA & Register-level & \CheckmarkBold & \textbf{Arrival Time} \\
 Ours & FPGA & Register-level & \CheckmarkBold & \textbf{Arrival Time} \\
 \bottomrule
 \end{tabular}%
@@ -98,48 +151,13 @@ Ours & FPGA & Register-level & \CheckmarkBold & \textbf{Arrival Time} \\
 \end{table}
 
 
-
-The emergence of machine learning has brought new opportunities.
-Recent studies demonstrate that graph neural networks (GNNs) can capture long-range timing dependencies in ASIC design flows, enabling accurate pre-routing delay estimation~\cite{timinggcn,preroutegnn}.
-However, applying these methods to FPGAs remains challenging. In FPGA designs, net delay is dominated by architecture‑specific routing fabrics, which impose strict and non‑customizable routing constraints. These constraints, including limited path options, fixed channel widths, and delay variations due to congestion, complicate pre-routing timing modeling.
-As shown in Table~\ref{tab:related}, prior FPGA timing-prediction methods either predict indirect, coarse-grained metrics or provide architecture-only delay estimates that do not incorporate design-specific structure or timing dependencies. 
-This highlights the need for FPGA-specific models that directly estimate node-level delays across real designs.
-
-
-In this paper, we propose a novel physical-aware retiming approach accelerated by a pre-routing timing predictor, as shown in Fig.~\ref{fig:framework}. The main contributions are as follows:
-
-\begin{itemize}
-    \item \textbf{First FPGA Pre-routing Node-level Arrival Time (AT) Predictor}: The predictor incorporates placement, topology, and congestion information.
-    \item \textbf{First Use of Graph AutoEncoder (GAE) for FPGA RRG Feature Enhancement}: We model intra-tile RRG and apply GAE with an edge-aware network layer to enhance node embeddings and improve feature learning.
-    \item \textbf{Physical-aware Retiming Algorithm}: We propose a retiming algorithm that integrates predicted delays, optimizing critical paths while considering physical constraints.
-    \item \textbf{Experimental Validation}: Comprehensive experiments demonstrate that our approach improves $F_\text{max}$ by 8\% compared to traditional logic-only retiming methods.
-\end{itemize}
-
-
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=\linewidth]{figure/framwork.txt.png}
-    \caption{Traditional physical-aware retiming~\cite{ref_iterret} and the proposed framework.}
-    \label{fig:framework}
-    \vspace{4pt}
-\end{figure}
-
-
-% \subsection{Retiming}
-% Retiming is a classic sequential circuit optimization technique used to improve the clock frequency of a design by repositioning registers across combinational logic blocks without altering the circuit's functional behavior~\cite{ref:retime}. The primary objective of retiming is Clock Period Minimization, which focuses on reducing the maximum delay of any combinational path between two consecutive registers. By strategically moving registers, this optimization directly minimizes the circuit's minimum achievable clock period, thereby increasing its maximum operating frequency.
-
-% To formalize this process, a circuit is modeled as a directed graph, \(G=(V,E)\), where each vertex \(v \in V\) represents a combinational logic gate, and each directed edge \(e=(u,v) \in E\) represents a signal connection from gate $u$ to gate $v$ . Each vertex \(v\) is assigned a weight \(d(v)\) corresponding to its propagation delay. Edges are assigned weights,\(w(e)\), representing the number of registers on that connection. The core of retiming involves assigning an integer lag, \(r(v)\), to each vertex. This lag signifies moving \(r(v)\) registers from the output of gate $v$ to its inputs. Consequently, the register count on an edge \(e=(u,v)\) is updated to \(w'(e)= w ( e ) + r ( v ) - r ( u )\). For a valid retiming, all \(w'(e)\) must remain non-negative. The optimization problem is then to find a lag assignment \(r\) that minimizes the clock period or register count under the relevant constraints.
-
 \section{Background}
 
-\subsection{FPGA Routing and Static Timing Analysis}
-
-In FPGA static timing analysis (STA), arrival time is propagated along directed timing arcs from primary inputs or launching registers to downstream nodes. For each timing node, its arrival time is computed from the maximum arrival time of its fan-in nodes plus the delay of the corresponding timing arc. This arc delay consists of logic delay and net delay. Logic delay is determined by the mapped logic elements, while net delay is determined by the routed interconnect. Pre-routing timing estimation predicts node arrival time before detailed routing from placement features, congestion-aware signals, and post-placement timing priors.
 
 
 \subsection{Pre-Routing Timing Estimation in FPGA Design}
 
-Existing FPGA pre-routing timing estimation methods can be divided into three categories. The first category predicts indirect routing-related proxies, such as wirelength, congestion, routability, or MUX usage, from placement-derived features. These methods are useful for global quality assessment, but they do not directly provide node-level timing information for critical-path analysis~\cite{wirelength,bbcong,conghls,fGREP,dl_routability,routenet,sta_rout_mux}.
+Existing FPGA pre-routing timing estimation methods can be divided into three categories. The first category predicts indirect routing-related proxies from placement-derived features. Representative examples include wirelength prediction~\cite{wirelength}, congestion estimation~\cite{bbcong,conghls}, routability prediction~\cite{dl_routability,routenet}, and MUX-usage modeling~\cite{fGREP,sta_rout_mux}. Although useful for global quality assessment, these methods do not directly provide node-level timing information for critical-path analysis.
 
 The second category predicts delay for specific targets. Hu \emph{et al.}~\cite{lutdelay} use machine learning to estimate delay during FPGA technology mapping. Ustun \emph{et al.}~\cite{hlspd} use graph neural networks to predict operation-level delay in FPGA HLS. Although effective in their target scenarios, these methods are tied to specific abstraction levels or design stages, and are therefore insufficient for general node-level or path-level timing estimation on placed netlists.
 
@@ -149,7 +167,9 @@ Overall, existing FPGA methods either predict coarse proxies, address restricted
 
 \subsection{GNN-Based Timing Prediction}
 
-Graph neural networks (GNNs) learn node representations by aggregating information from graph neighbors~\cite{gnn}. A general GNN layer can be written as
+Graph neural networks (GNNs) learn node representations by aggregating
+information from graph neighbors~\cite{gnn}. A general GNN layer can be
+written as
 \begin{equation}
 \mathbf{h}_v^{(l+1)}
 =
@@ -159,28 +179,24 @@ Graph neural networks (GNNs) learn node representations by aggregating informati
 \psi\!\left(\mathbf{h}_v^{(l)},\mathbf{h}_u^{(l)},\mathbf{e}_{uv}\right)
 \right),
 \end{equation}
-where \(\mathbf{h}_v^{(l)}\) is the representation of node \(v\) at layer \(l\), \(\mathcal{N}(v)\) denotes its neighbors, and \(\mathbf{e}_{uv}\) denotes edge features.
+where \(\mathbf{h}_v^{(l)}\) is the representation of node \(v\) at
+layer \(l\), \(\mathcal{N}(v)\) denotes its neighbors, and
+\(\mathbf{e}_{uv}\) denotes edge features.
 
-This formulation is suitable for timing analysis because arrival time is propagated along directed timing arcs and depends on both local delays and graph topology. GNN-based timing predictors have been studied in ASIC design~\cite{timinggcn,letime,gattiming,preroutegnn}. However, FPGA pre-routing timing estimation still lacks a predictor explicitly designed on the timing graph of a placed netlist. This gap motivates a graph-based predictor that combines timing propagation with placement-derived physical information.
-% \subsection{GNN}
-
-% GNNs are models designed for graph-structured data~\cite{gnn}. Through message passing, GNNs aggregate features from neighboring nodes and iteratively update node representations, capturing complex dependencies within the graph. By stacking multiple layers, the model gains a broader receptive field, enabling it to capture dependencies across larger portions of the graph. The message-passing operation can be expressed as follows:
-% \begin{equation}
-% \mathbf{h}_v^{(k+1)} = \sigma\left( W \cdot \text{AGG}\left( \{ \mathbf{h}_u^{(k)} : u \in \mathcal{N}(v) \} \right) + b \right),
-% \end{equation}
-% where \(\mathbf{h}_v^{(k)}\) represents the feature vector of node \(v\) at layer \(k\), and \(\mathcal{N}(v)\) denotes the set of neighbors of node \(v\). This aggregation process allows the model to progressively incorporate contextual information from larger neighborhoods, expanding its ability to capture global dependencies.
-
-% In FPGA design, the bottleneck in path-level timing prediction lies in the accurate estimation of net delay. The paths or trajectories of the nets are established on the basis of the FPGA routing architecture, which is described by the RRG. In the RRG, nodes represent routing resources, while edges indicate that two resources can be connected via switches. GNNs can effectively capture the topological structure of the routing architecture and the delay characteristics of the routing resources, making them ideal for learning embeddings that is crucial for net delay prediction.
-
-
-
-% \section{GAE-enhanced Timing Predictor}
-% \section{Overall flow}
-% Our proposed framework is illustrated in Fig.~\ref{fig:framework}, which contrasts it with a previous physical-aware retiming optimization flow~\cite{ref_iterret}. 
-% The entire process is integrated into the Verilog-to-Routing (VTR)~\cite{vtr9}, a comprehensive academic CAD flow that translates Verilog designs into FPGA configurations. The flow begins with logic synthesis, where the input design is processed by tools such as ABC~\cite{abc} to generate a technology-mapped netlist.
-% As depicted on the left side of Figure~\ref{fig:framework}, the conventional physical-aware retiming in~\cite{ref_iterret} suffers from a significant performance bottleneck. To obtain accurate timing information for the physical-aware retiming engine, the design must pass through the complete P\&R flow. Within the VTR toolchain, this task is handled by the Versatile Place and Route (VPR) engine. The bottleneck arises because the entire VPR execution (P\&R, STA) is enclosed within a slow, iterative loop. Consequently, each retiming decision necessitates a full P\&R run, making the optimization process prohibitively time-consuming for large designs.
-
-% Our framework, shown on the right, fundamentally accelerates this process by decoupling the retiming loop from the expensive routing stage. After an initial VPR Pack \& Place, instead of running the full router, we leverage our GAE-enhanced Timing predictor. This predictor takes the placed netlist, the timing graph, and the routing resource graph as input, estimates the arrival time of each node, and outputs the predicted longest 10 paths. The predicted critical paths are then fed to the Physical-aware retiming engine, forming a new, lightweight optimization loop (indicated in green). This loop, comprising only placement, prediction, and retiming, can iterate faster than the conventional approach. By replacing the costly physical routing step with a fast and accurate pre-routing timing prediction, our framework effectively bridges the gap between logical optimization and physical reality without incurring the prohibitive runtime overhead.
+This formulation is suitable for timing analysis because arrival time is
+propagated along directed timing arcs and depends on both local delays
+and graph topology. GNN-based timing predictors have been studied in
+ASIC design~\cite{timinggcn,letime,gattiming,preroutegnn}. However, FPGA
+timing prediction differs fundamentally from ASIC timing prediction. In
+ASIC flows, a net is often approximated as a geometric interconnect
+whose delay mainly depends on placement and wire parasitics. In
+contrast, an FPGA net is implemented by selecting a legal path through
+the fixed routing architecture, as illustrated in
+Fig.~\ref{fig:rrg}. The routing architecture is typically modeled as a
+routing resource graph (RRG), where nodes correspond to routing
+resources or pins and edges denote programmable connections. As a result, 
+its delay is strongly influenced by switch-box topology and
+local congestion, rather than by geometric distance alone. Based on the RRG, a timing graph can be further constructed for timing analysis, as illustrated in Fig.~2(c). As can be observed from the timing graph, the total delay of a complete timing path typically consists of three components: the clock-to-Q delay, the net delay, and the combinational logic delay.
 
 \begin{figure}[t]
     \centering
@@ -190,104 +206,78 @@ This formulation is suitable for timing analysis because arrival time is propaga
     \vspace{4pt}
 \end{figure}
 
-% \section{Framework Overview}
-
-% Our proposed framework is integrated into the Verilog-to-Routing (VTR) framework~\cite{vtr9}, a comprehensive academic CAD flow that translates Verilog designs into FPGA configurations.
-
-% As shown in Fig.~\ref{fig:framework}, traditional physical-aware retiming methods~\cite{ref_iterret} incur significant computational overhead due to the need for a complete routing process at each retiming decision. In contrast, our method accelerates optimization by using a GAE-enhanced Timing predictor. This predictor takes the placed netlist, the timing graph, and routing resource graph as inputs, estimates the arrival time of each node, and outputs the predicted longest 10 paths.
-% These 10 paths are then used to identify the most critical timing paths in the circuit, which are subsequently targeted for retiming adjustments. By relocating the registers in these paths, we can effectively reduce delay and improve the circuit’s overall timing performance.
-
-% By replacing routing with fast timing prediction, our framework reduces overhead and bridges the gap between logical optimization and physical reality.
-
-
-% \subsection{GAE-Enhanced Timing Predictor}
-
-
-
-% The critical path is determined by the timing graph structure, logic delays, and net delays. Among these, net delay is influenced by the routing and Static Timing Analysis (STA) stages, which depend on factors such as the physical distance between pins, routing architecture, and congestion levels. To comprehensively address these factors, we propose a GAE-enhanced predictor that improves feature learning through the aggregation of both local and global dependencies.
-
-% In the timing graph, net delay is represented as the delay along an interconnect edge, while in the RRG, it is represented as the path between a source–sink (SS) pair, where both nodes are virtual node types. As illustrated in Fig.~\ref{fig:gnnpd}, our feature extraction and prediction processes are based on this representation. Specifically, our inference workflow consists of three major stages:
-
-% \subsubsection{Feature Engineering}
-% Feature engineering in our framework involves three key aspects. 
-
-%  \textbf{\underline{Interconnect Features in Timing Graph}:} In the Timing graph, each interconnect edge represents an SS pair. The in-degree and out-degree of nodes impact local connectivity complexity. The number of source and sink nodes, as well as the average and maximum node degrees, affect global routing behavior. Additionally, graph density, the ratio of edges to the maximum possible edges, reflects overall connectivity in the graph, leading to congestion, detours, and increased net delay.
- 
-
-%  \textbf{\underline{SS Pair Features}:} This category focuses on the macroscopic characteristics of the source and sink nodes. It includes the relative physical location between the source and sink, which directly influences the physical transmission distance of the net, thereby significantly impacting the net delay. Additionally, we quantify the number of valid nodes within the tile of the source or sink, which contributes to local congestion.
-
-
-%  \textbf{\underline{Tile-level RRG Features}:} For a given RRG, we begin by pruning the graph based on the placement mapping results. We retain only those nodes that can be connected to valid source or sink nodes, removing redundant or unreachable nodes. The second step is intra-tile RRG construction. Specifically, we categorize all nodes based on their coordinates, assigning each node to its corresponding tile. For wires that span multiple tiles, we ensure that each node in the span is included in the respective tiles.
- 
-% Since source and sink nodes are virtual and lack delay features, we introduce a GAE to learn delay and topological features. The GAE model is pre-trained by minimizing the reconstruction error, ensuring that the learned embeddings preserve both local node features and global structural information. 
-% Our encoder learns hierarchical dependencies using a three-layer GNN, which helps capture both local and global interactions for more accurate predictions.
-% During inference, only the encoder generates node and graph embeddings, with the latter obtained by averaging the node embeddings of all nodes in the graph.
-
-% For each SS pair, we extract the bounding box that encloses both the source and sink. The features of each SS pair include node embeddings from the pre-trained GAE and the average graph embeddings of the graphs within the bounding box. Additionally, we count the number of times each tile appears in different bounding boxes. A higher frequency indicates greater overlap, suggesting potential congestion in that region.
-
-% The SS pair features are the concatenation of these three types of features, providing both local and global perspectives on the interconnect characteristics.
-
-% \subsubsection{XGBoost-based Net Delay Predictor}
-% The SS feature vectors are fed into an XGBoost regressor for net delay prediction. XGBoost is an advanced gradient boosting framework that constructs an ensemble of decision trees by sequentially fitting new trees to the residuals of previous ones, thereby capturing complex nonlinear relationships in the data. During training, the model is fitted using datasets derived from VPR routing and STA results.
-
-% \subsubsection{Arrival Time and Critical Path Prediction}
-% In the timing graph, delays are represented on the edges and are categorized into three types: \textbf{Clock-to-Q delay}, \textbf{Combinational logic delay}, and \textbf{Net delay}. The first two types of delays are obtained directly from the architecture file, while the \textbf{Net delay} is predicted by an \textbf{XGBoost-based model}. The arrival time (AT) of each node is computed through a forward traversal of the timing graph. The arrival time of each node can be expressed as follows:
-% \begin{equation}
-% AT(v_t) = \max_{u_t \in \text{pred}(v_t)} \left[ AT(u_t) + \text{delay}(u_t \rightarrow v_t) \right],
-% \end{equation}
-% where \( \text{pred}(v_t) \) denotes the set of immediate predecessors of node \( v_t \), and \( \text{delay}(u_t \rightarrow v_t) \) is the delay on the edge from node \( u_t \) to node \( v_t \).
-% Based on the nodes with the maximum arrival times, we trace back the longest delay path, which will be used as input for the subsequent retiming.
-
 
 \section{Physical-Aware Timing Predictor}
-PASTE relies on physically informative node and edge features extracted from the placed timing graph, so that the subsequent propagation network can model both logical timing dependencies and implementation-aware delay variation.
+As illustrated in Fig.~\ref{fig:framework}, PASTE takes the placement, RRG, and timing graph of a placed design as input. Placement and RRG information are first used to construct physically informative node and edge features, which are then associated with the timing graph. The resulting physical-aware timing graph is finally processed by the proposed Timing Propagation Network (TPN) to predict node-level arrival times and graph-level CPD.
+
 
 \subsection{RRG Pruning}
 \label{sec:rrg_pruning}
 
-The original routing resource graph (RRG) contains all physical routing
-resources and their interconnections. However, for a given design, only
-a subset of source and sink RRG nodes are associated with timing nodes.
-We denote these mapped nodes by
-$V_{\mathrm{rr,src}}^{\mathrm{valid}}$ and
-$V_{\mathrm{rr,sink}}^{\mathrm{valid}}$, respectively. Since the
-subsequent routing-related feature extraction only depends on resources
-that are reachable from valid sources and can further connect to valid
-sinks, we prune the RRG before computing density statistics.
+The original RRG contains all routing resources and programmable
+connections defined by the FPGA architecture. Features
+computed on the RRG can reflect architecture-dependent differences in
+interconnect resources and routing topology.
+However, if routing-density features are computed on the
+full RRG, many resources irrelevant to the current placed design may
+also be counted, which can distort the resulting congestion-related
+statistics. For example, a design may heavily occupy CLB-related regions
+while barely using memory blocks. If memory-related routing resources
+are still included in the density statistics, they can enlarge the
+effective resource space and artificially dilute the estimated
+congestion. We therefore prune the RRG before feature extraction.
 
-Specifically, each timing node is first mapped to its corresponding RRG
-source or sink node through the placement and net connectivity
-information provided by VTR. We then perform a forward breadth-first
-search (BFS) from $V_{\mathrm{rr,src}}^{\mathrm{valid}}$ and a backward
-BFS from $V_{\mathrm{rr,sink}}^{\mathrm{valid}}$. The valid RRG node set
-is defined as the intersection of the forward-reachable and
-backward-reachable nodes, and the valid edge set is induced by the
-resulting valid node set. The complete procedure is summarized in
-Algorithm~\ref{alg:rrg_pruning}. Since both BFS traversals run in
-$O(|V|+|E|)$ time, the pruning overhead is modest even for large RRGs.
-All routing-density features in the subsequent sections are computed on
-the pruned graph using
-$V_{\mathrm{rr}}^{\mathrm{valid}}$ and
-$E_{\mathrm{rr}}^{\mathrm{valid}}$.
+Algorithm~\ref{alg:rrg_pruning} summarizes the proposed RRG pruning
+procedure. We first map each timing node to its corresponding RRG source
+or sink node. Starting from these valid source and sink nodes, we retain
+only those RRG nodes that are reachable from valid sources and can
+further reach valid sinks. In this way, the pruned RRG preserves only
+the routing resources that are potentially relevant to the current
+placed design. The resulting valid node set and induced valid edge set
+are denoted by \(V_{\mathrm{rr}}^{\mathrm{valid}}\) and
+\(E_{\mathrm{rr}}^{\mathrm{valid}}\), respectively. All routing-density
+features in the subsequent sections are computed on this pruned RRG.
 
 \begin{algorithm}[t]
 \caption{RRG Pruning via Breadth-First Search}
 \label{alg:rrg_pruning}
 \small
 \begin{algorithmic}[1]
-\REQUIRE Timing-node set $V_t$, RRG node set $V_{\mathrm{rr}}$, RRG edge set $E_{\mathrm{rr}}$
-\ENSURE Valid RRG node set $V_{\mathrm{rr}}^{\mathrm{valid}}$, valid RRG edge set $E_{\mathrm{rr}}^{\mathrm{valid}}$
+\Require Timing-node set $V_t$, RRG node set $V_{\mathrm{rr}}$, RRG edge set $E_{\mathrm{rr}}$
+\Ensure Valid RRG node set $V_{\mathrm{rr}}^{\mathrm{valid}}$, valid RRG edge set $E_{\mathrm{rr}}^{\mathrm{valid}}$
 
-\STATE $(V_{\mathrm{rr,src}}^{\mathrm{valid}},\,V_{\mathrm{rr,sink}}^{\mathrm{valid}})\gets \mathrm{MAP}(V_t)$
-\STATE $S_{\mathrm{valid}} \gets V_{\mathrm{rr,src}}^{\mathrm{valid}}$
-\STATE $T_{\mathrm{valid}} \gets V_{\mathrm{rr,sink}}^{\mathrm{valid}}$
-\STATE $S_{\mathrm{valid}} \gets S_{\mathrm{valid}} \cup \mathrm{BFS\mbox{-}F}(S_{\mathrm{valid}}, V_{\mathrm{rr}}, E_{\mathrm{rr}})$
-\STATE $T_{\mathrm{valid}} \gets T_{\mathrm{valid}} \cup \mathrm{BFS\mbox{-}B}(T_{\mathrm{valid}}, V_{\mathrm{rr}}, E_{\mathrm{rr}})$
-\STATE $V_{\mathrm{rr}}^{\mathrm{valid}} \gets S_{\mathrm{valid}} \cap T_{\mathrm{valid}}$
-\STATE $E_{\mathrm{rr}}^{\mathrm{valid}} \gets \{(v_{\mathrm{src}},v_{\mathrm{dst}})\in E_{\mathrm{rr}} \mid v_{\mathrm{src}},v_{\mathrm{dst}}\in V_{\mathrm{rr}}^{\mathrm{valid}}\}$
-\RETURN $V_{\mathrm{rr}}^{\mathrm{valid}}, E_{\mathrm{rr}}^{\mathrm{valid}}$
+\State $(V_{\mathrm{rr,src}}^{\mathrm{valid}},\,V_{\mathrm{rr,sink}}^{\mathrm{valid}})\gets \mathrm{MAP}(V_t)$
+\State $S_{\mathrm{valid}} \gets V_{\mathrm{rr,src}}^{\mathrm{valid}}$
+\State $T_{\mathrm{valid}} \gets V_{\mathrm{rr,sink}}^{\mathrm{valid}}$
+\State $S_{\mathrm{valid}} \gets S_{\mathrm{valid}} \cup \mathrm{BFS\text{-}F}(S_{\mathrm{valid}}, V_{\mathrm{rr}}, E_{\mathrm{rr}})$
+\State $T_{\mathrm{valid}} \gets T_{\mathrm{valid}} \cup \mathrm{BFS\text{-}B}(T_{\mathrm{valid}}, V_{\mathrm{rr}}, E_{\mathrm{rr}})$
+\State $V_{\mathrm{rr}}^{\mathrm{valid}} \gets S_{\mathrm{valid}} \cap T_{\mathrm{valid}}$
+\State $E_{\mathrm{rr}}^{\mathrm{valid}} \gets \{(v_{\mathrm{src}},v_{\mathrm{dst}})\in E_{\mathrm{rr}} \mid v_{\mathrm{src}},v_{\mathrm{dst}}\in V_{\mathrm{rr}}^{\mathrm{valid}}\}$\\
+\Return $V_{\mathrm{rr}}^{\mathrm{valid}}, E_{\mathrm{rr}}^{\mathrm{valid}}$
 \end{algorithmic}
 \end{algorithm}
+
+\subsection{Timing Graph Construction}
+
+Following the timing-graph abstraction used in VTR~\cite{vtr9}, we
+model each design as a directed timing graph
+\(
+\mathcal{G}=(\mathcal{V},\mathcal{E}),
+\)
+where each timing node (denoted as \texttt{tnode} in VTR) is represented
+as a graph node, and each timing edge (denoted as \texttt{tedge} in VTR)
+is represented as a directed edge
+describing a valid timing dependency between two timing nodes. This
+timing graph is maintained and updated throughout the CAD flow as timing
+information becomes more accurate. In particular, after placement, VTR
+provides a timing graph whose edge delays already incorporate
+logic-delay information and whose nodes carry placement-stage timing
+annotations. These post-placement timing quantities provide useful prior
+knowledge before detailed routing. In this work, we perform pre-routing
+timing prediction on this post-placement timing graph. Node and edge features 
+are then constructed on this post-placement timing graph.
+
+
 
 \subsection{Feature Engineering}
 
@@ -296,87 +286,86 @@ topological structure, placement geometry, timing priors, and
 routing-related context. Common scalar attributes are normalized before
 being fed into the model, while categorical attributes are encoded by
 one-hot representations. All density-related statistics are computed on
-the pruned RRG introduced in Sec.~\ref{alg:rrg_pruning}, using the valid
+the pruned RRG introduced in Sec.~\ref{sec:rrg_pruning}, using the valid
 node set $V_{\mathrm{rr}}^{\mathrm{valid}}$ and valid edge set
 $E_{\mathrm{rr}}^{\mathrm{valid}}$. The complete node and edge features
 are summarized in Table~\ref{tab:node_feat_timing} and
 Table~\ref{tab:edge_feat_timing}.
 
-\begin{table*}[t]
+\begin{table}[t]
 \centering
 \caption{Node features used in the timing graph.}
 \label{tab:node_feat_timing}
 \footnotesize
-\begin{tabular}{llll}
+\begin{tabular}{lll}
 \toprule
-\textbf{Feature Group} & \textbf{Feature} & \textbf{Type/Range} & \textbf{Description} \\
+\textbf{Feature Group} & \textbf{Feature} & \textbf{Type/Range} \\
 \midrule
 \multirow{2}{*}{Placement}
 & x-coordinate
 & float / normalized
-& horizontal location; available for placed node types only \\
+\\
 & y-coordinate
 & float / normalized
-& vertical location; available for placed node types only \\
+\\
 \midrule
 \multirow{4}{*}{Topology}
 & logic level
 & integer
-& longest topological distance in the combinational subgraph \\
+\\
 & global longest logic level
 & integer / broadcast
-& maximum logic level of the graph, shared by all nodes \\
+\\
 & node type
 & categorical / one-hot
-& node semantics \\
+\\
 & fanin / fanout
 & integer
-& local connectivity \\
+\\
 \midrule
 \multirow{1}{*}{Timing Prior}
 & post-placement arrival-time prior
 & float / normalized
-& placement-stage timing estimate from VTR \\
+\\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-\begin{table*}[t]
+\begin{table}[t]
 \centering
 \caption{Edge features used in the timing graph.}
 \label{tab:edge_feat_timing}
 \footnotesize
-\begin{tabular}{llll}
+\begin{tabular}{lll}
 \toprule
-\textbf{Feature Group} & \textbf{Feature} & \textbf{Type/Range} & \textbf{Description} \\
+\textbf{Feature Group} & \textbf{Feature} & \textbf{Type/Range} \\
 \midrule
 \multirow{2}{*}{Geometry}
 & HPWL
 & float / normalized
-& source--sink bounding-box wirelength \\
+\\
 & Manhattan distance
 & float / normalized
-& source--sink geometric span \\
+\\
 \midrule
 \multirow{2}{*}{Bounding-box Density}
 & node-density max / avg
 & float / normalized
-& valid source/sink density over covered tiles \\
+\\
 & edge-usage-density max / avg
 & float / normalized
-& valid routing-demand density over covered tiles \\
+\\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-For each logic node $v$, we compute its logic level as the longest
-topological distance from a source logic node in the combinational
-subgraph:
+For each timing node \(v\), we compute its logic level $l_v$ on the
+combinational subgraph as:
 \begin{equation}
 l_v=\max_{p\in\mathcal{P}(v)} |p|,
 \end{equation}
 where $\mathcal{P}(v)$ denotes the set of topological paths ending at
-$v$. We further compute the maximum logic level of the whole graph,
+$v$. We further compute the maximum logic level $l_{\max}$ of the whole graph,
 \begin{equation}
 l_{\max}=\max_{v\in\mathcal{V}} l_v,
 \end{equation}
@@ -404,7 +393,8 @@ is defined as
 \end{equation}
 where $N^{\mathrm{valid}}_b$ is the number of valid source/sink RRG
 nodes in tile $b$, and $N^{\mathrm{all}}_b$ is the total number of
-source/sink RRG nodes in that tile. The maximum and average values
+source/sink RRG nodes in that tile. Specifically, if the denominator is zero, the 
+corresponding density is set to zero.The maximum and average values
 within the bounding box are then used as edge features:
 \begin{equation}
 \rho^{\mathrm{node}}_{uv,\max}
@@ -427,7 +417,8 @@ valid routing edges in that tile. The edge-usage density is defined as
 =
 \frac{C_b}{E^{\mathrm{valid}}_b},
 \end{equation}
-and its maximum and average values over $\mathcal{B}_{uv}$ are used as
+where the density is set to zero if $E^{\mathrm{valid}}_b=0$.
+Its maximum and average values over $\mathcal{B}_{uv}$ are used as
 edge features:
 \begin{equation}
 \rho^{\mathrm{edge}}_{uv,\max}
@@ -441,41 +432,24 @@ edge features:
 \rho^{\mathrm{edge}}_b.
 \end{equation}
 
-Given a timing graph $\mathcal{G}=\left(\mathcal{V}, \left\{\mathcal{E}^{(k)}\right\}_{k=0}^{3}\right)$,
-where $\mathcal{V}$ denotes the set of timing nodes and $\mathcal{E}^{(k)}$
-denotes the directed edge set of relation type $k$, each node $v\in\mathcal{V}$
-is associated with a node feature vector $\mathbf{x}_v$, and each directed
-edge $(u,v)\in\mathcal{E}^{(k)}$ is associated with an edge feature
-vector $\mathbf{a}_{uv}^{(k)}$. The goal is to predict the normalized arrival
-time for each node and the critical path delay (CPD) of the whole graph.
-
-To process this graph, we use a Timing Propagation Network (TPN).
-TPN adopts a two-stage architecture. The first stage learns local
-heterogeneous structural representations from multi-type timing edges.
-The second stage performs delay-weighted max propagation to model
-long-range timing dependency. The network produces both node-level and
-graph-level outputs.
-
 \subsection{Timing Propagation Network}
 
-Given a timing graph
-\(
-\mathcal{G}=\left(\mathcal{V}, \left\{\mathcal{E}^{(k)}\right\}_{k=0}^{3}\right),
-\)
-where \(\mathcal{V}\) denotes the set of timing nodes and \(\mathcal{E}^{(k)}\)
-denotes the directed edge set of relation type \(k\), each node
-\(v\in\mathcal{V}\) is associated with a node feature vector
-\(\mathbf{x}_v\), and each directed edge \((u,v)\in\mathcal{E}^{(k)}\)
-is associated with an edge feature vector \(\mathbf{a}_{uv}^{(k)}\).
-The goal is to predict the normalized arrival time of each node and the
-critical path delay (CPD) of the whole graph.
-We use a Timing Propagation Network (TPN) for this task. TPN adopts
-a two-stage architecture. 
+We propose a \emph{Timing Propagation Network} (TPN) for pre-routing
+timing estimation. As illustrated in Fig.~\ref{fig:tpn}, it consists of
+a heterogeneous message-passing stage, a delay-weighted propagation
+stage, and two prediction heads for node-level and graph-level outputs.
+Let \(\mathcal{V}_{\mathrm{tg}}\) denote the set of timing nodes, and let
+\(\mathcal{E}_{\mathrm{tg}}^{(k)}\) denote the directed timing-edge set of
+relation type \(k\).
 
-The first stage applies several heterogeneous
-message-passing layers to learn local representations from multi-type
-timing edges. Raw node features are first projected by a shared node MLP,
-while raw edge features are projected by relation-specific edge MLPs:
+The first stage applies several heterogeneous message-passing layers to
+learn local representations from multi-type timing edges. For each
+timing node \(v\in\mathcal{V}_{\mathrm{tg}}\), let \(\mathbf{x}_v\) denote
+its raw node feature. For each directed edge
+\((u,v)\in\mathcal{E}_{\mathrm{tg}}^{(k)}\), let
+\(\mathbf{a}_{uv}^{(k)}\) denote its raw edge feature. Raw node
+features are first projected by a shared node MLP, while raw edge
+features are projected by relation-specific edge MLPs:
 \begin{equation}
 \mathbf{h}_v^{(0)}=\mathrm{MLP}_{\mathrm{node}}(\mathbf{x}_v),
 \end{equation}
@@ -483,25 +457,34 @@ while raw edge features are projected by relation-specific edge MLPs:
 \mathbf{e}_{uv}^{(k)}=\mathrm{MLP}_{\mathrm{edge}}^{(k)}(\mathbf{a}_{uv}^{(k)}),
 \end{equation}
 where \(\mathrm{MLP}_{\mathrm{edge}}^{(k)}\) has independent parameters for
-each edge type \(k\). The encoded node and edge features are then fed
-into the following heterogeneous message-passing layers.
+each edge type \(k\). The encoded node and edge features are then
+processed by \(L\) heterogeneous message-passing layers with sum
+aggregation, which captures the combined contributions of multiple local
+predecessors. The resulting node representations are denoted by
+\(\tilde{\mathbf{h}}_v^{(0)}\). In contrast, Stage II uses max
+aggregation to model the worst-predecessor behavior in timing
+propagation.
 
 The second stage performs delay-weighted max propagation to model
-long-range timing dependency. For each directed edge
-\((u,v)\), we compute a scalar gate from its edge representation using a
-shared trainable linear layer:
+long-range timing dependency. Its input consists of the node
+representations \(\tilde{\mathbf{h}}_v^{(0)}\) and the encoded edge
+features \(\mathbf{e}_{uv}^{(k)}\). For each directed edge \((u,v)\), we
+compute a scalar gate from its edge representation using a shared
+trainable linear layer:
 \begin{equation}
 w_{uv}=g(\mathbf{e}_{uv}^{(k)})=\sigma\!\left(\mathbf{W}_{g}\mathbf{e}_{uv}^{(k)}+b_{g}\right),
 \end{equation}
-where \(\mathbf{W}_{g}\) and \(b_{g}\) are learnable parameters, and \(\sigma(\cdot)\) is the sigmoid
-function. The same gate \(w_{uv}\) is reused across all propagation
-steps.
+where \(\mathbf{W}_{g}\) and \(b_{g}\) are learnable parameters, and
+\(\sigma(\cdot)\) is the sigmoid function. The same gate \(w_{uv}\) is
+reused across all propagation steps. This design uses the fixed physical
+delay attributes of each edge as a shared propagation prior, while also
+avoiding redundant gate computation across steps.
 
 Let \(\tilde{\mathbf{h}}_v^{(t)}\) denote the node representation at
 propagation step \(t\). For \(t=1,\dots,T\), one propagation step is
 defined as
 \begin{equation}
-\mathbf{a}_v^{(t)}
+\mathbf{m}_v^{(t)}
 =
 \max_{u\in\mathrm{Pred}(v)}
 \left(
@@ -513,436 +496,203 @@ w_{uv}\,\tilde{\mathbf{h}}_u^{(t-1)}
 =
 \mathrm{Fuse}^{(t)}
 \!\left(
-\tilde{\mathbf{h}}_v^{(t-1)},\mathbf{a}_v^{(t)}
+\tilde{\mathbf{h}}_v^{(t-1)},\mathbf{m}_v^{(t)}
 \right),
 \end{equation}
-where \(\mathrm{Pred}(v)\) denotes the set of predecessors of \(v\) over
-all edge types, and \(\mathrm{Fuse}^{(t)}\) is a step-specific residual
-fusion module with independent learnable parameters. In each step, the
-source-node representation is first scaled by the edge gate, then
-aggregated by element-wise max over all incoming edges, and finally fused
-with the previous node state.
-
+where
+\[
+\mathrm{Pred}(v)=\{u\in\mathcal{V}_{\mathrm{tg}}\mid (u,v)\in\mathcal{E}_{\mathrm{tg}}^{(k)}\ \text{for some}\ k\}
+\]
+denotes the set of predecessors of \(v\) over all edge types. The
+step-specific residual fusion module is formulated as
+\begin{equation}
+\mathrm{Fuse}^{(t)}(\mathbf{h},\mathbf{m})
+=
+\mathrm{LN}
+\!\left(
+\mathbf{h}
++
+\mathrm{MLP}^{(t)}
+\!\left(
+[\mathbf{h}\Vert\mathbf{m}]
+\right)
+\right),
+\end{equation}
+where \(\mathrm{MLP}^{(t)}\) has independent learnable parameters at step
+\(t\), \([\cdot\Vert\cdot]\) denotes concatenation, and \(\mathrm{LN}\)
+denotes layer normalization. In each step, the source-node
+representation is first scaled by the edge gate, then aggregated by
+element-wise max over all incoming edges, and finally fused with the
+previous node state through residual update and normalization.
 
 After propagation, TPN produces both node-level and graph-level outputs.
-A node-level MLP predicts the normalized arrival time for each node. For
-graph-level prediction, max pooling is applied over all final node
-embeddings, followed by a graph-level MLP to predict CPD.
-
-To jointly supervise the two outputs, we define the node-level loss as
+For each node \(v\in\mathcal{V}_{\mathrm{tg}}\), the normalized arrival
+time is predicted by a node-level MLP, denoted by \(\hat{y}_v\). For
+graph-level prediction, we first apply global max pooling over the final
+node embeddings to obtain a graph representation, and then use a
+graph-level MLP to predict the normalized CPD, as formulated in
+Eqs.~\eqref{hg} and~\eqref{yg}.
 \begin{equation}
-\mathcal{L}_{\mathrm{node}}
+\mathbf{h}_{\mathcal{G}}
 =
-\frac{1}{|\mathcal{V}|}
-\sum_{v\in\mathcal{V}}
-\left(
-\hat{y}_v-\frac{t_v}{t_{\max}^{\mathrm{pl}}}
-\right)^2,
+\max_{v\in\mathcal{V}_{\mathrm{tg}}} \tilde{\mathbf{h}}_v^{(T)},
+\label{hg}
 \end{equation}
-where \(t_v\) denotes the target arrival time of node \(v\), and
-\(t_{\max}^{\mathrm{pl}}=\max_{u\in\mathcal{V}} t_u^{\mathrm{pl}}\) is the
-maximum post-placement arrival-time prior in the graph. The graph-level
-loss is defined as
-\[
-\mathcal{L}_{\mathrm{cpd}}
+\begin{equation}
+\hat{y}_{\mathcal{G}}
 =
-\left(
-\widehat{\mathrm{CPD}}-\mathrm{CPD}
-\right)^2.
-\]
-The overall objective is
-\[
+\mathrm{MLP}_{\mathrm{graph\_out}}(\mathbf{h}_{\mathcal{G}}).
+\label{yg}
+\end{equation}
+
+Both outputs are normalized by the maximum post-placement arrival-time
+prior of the same graph,
+\(t_{\max}^{\mathrm{pl}}=\max_{u\in\mathcal{V}_{\mathrm{tg}}} t_u^{\mathrm{pl}}\),
+where \(t_u^{\mathrm{pl}}\) denotes the post-placement arrival-time prior
+of timing node \(u\). This normalization reduces scale variation across
+circuits and prevents large designs from dominating training. We use
+mean squared error (MSE) to supervise both prediction tasks jointly:
+\begin{equation}
 \mathcal{L}
 =
-\mathcal{L}_{\mathrm{node}}
+\frac{1}{|\mathcal{V}_{\mathrm{tg}}|}
+\sum_{v\in\mathcal{V}_{\mathrm{tg}}}
+\left(
+\hat{y}_v-\frac{t_v}{t_{\max}^{\mathrm{pl}}}
+\right)^2
 +
-\alpha\,\mathcal{L}_{\mathrm{cpd}},
-\]
-where \(\alpha>0\) balances node-level and graph-level supervision.
-
-% \section{GAE-enhanced Timing Predictor}
-
-% The focus of our predictor is on estimating the net delay for each source-sink (SS) pair, as illustrated in Fig.~\ref{fig:rrg}. In this context, the source is a virtual node representing the logical output, while the sink is a virtual node corresponding to the logical input.
-
-% The overall flow of our predictor is shown in Fig.~\ref{fig:pf}. To predict the net delay, we extract three key feature sets: (1) topological features from the RRG, (2) distance features derived from the placement of the SS pair, and (3) circuit-level and net structural features from the timing graph. Notably, the features extracted from the RRG are enhanced through a pre-trained GAE. 
-
-% These feature sets are then concatenated into a single feature vector for each SS pair, which is used for both training and inference with an XGBoost-based regressor. The predicted delays are subsequently propagated along the timing graph to calculate the arrival times at each endpoint. 
-% The predictor is trained once on multiple designs and directly applied to unseen test circuits without per-design retraining, demonstrating cross-design generalization.
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figure/predict_flow.png}
-%     \caption{The GAE-enhanced timing predictor.}
-%     \label{fig:pf}
-% \end{figure}
-% \vspace{3pt}
-% \subsection{Intra-Tile RRG Construction}
-
-% The full RRG in modern FPGA architectures is extremely large.  
-% A complete RRG typically contains over \textbf{150K nodes}, which is beyond the practical input scale of GNN models.
-% Fortunately, as shown in Fig.~\ref{fig:structure_rrg}, two structural properties of FPGA routing architectures enable effective graph reduction:
-
-% \begin{itemize}
-%     \item \textbf{Redundancy.} After placement, only a small subset of RRG nodes is reachable from mapped sources and sinks. Other nodes are never activated and can be safely removed.
-
-%     \item \textbf{Local modularity and architectural stationarity.}
-%     FPGA fabrics consist of repeated tile types (e.g., CLB, DSP, BRAM), each with similar intra-tile routing, forming self-contained subgraphs that are stable across circuits.
-% \end{itemize}
-
-% \subsubsection{RRG pruning}
-% We perform a forward breadth-first search from valid source nodes and a backward breadth-first search from valid sink nodes. The intersection of the nodes found in both searches defines the valid RRG, while unreachable nodes are removed. On our benchmarks in Section~\ref{exp}, pruning reduced the RRG size by an average factor of \underline{2$\times$}, with a maximum reduction of \underline{4.7$\times$}.
-
-% \subsubsection{Intra-tile RRG extraction}
-
-% In a pruned RRG, we partition the nodes into subgraphs based on their coordinates, creating intra-tile RRGs. Specifically, interconnect nodes are included in all tiles to which they are connected. Each node's features consist of its own attributes, the features of the edges driving it, and the global features of the tile it resides in, as shown in the Table~\ref{tile_feature}. Among the global features, $pins$ represents the number of nodes in the pruned tile, and $bb\_count$ indicates how many net bounding boxes overlap with the tile. In our experiments, each intra-tile RRG has about \underline{100 nodes}, reducing the size by roughly \underline{three orders of magnitude} on average and up to four in the best case.
-
-
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figure/intra-tile.png}
-%     \caption{The structural properties of FPGA RRG.}
-%     \label{fig:structure_rrg}
-% \end{figure}
-
-% \begin{table}[t]
-% \small
-% \caption{Feature List of Intra-tile RRG Node}
-%     \centering
-%     \resizebox{\linewidth}{!}{
-% \setlength{\tabcolsep}{2pt}
-%     \begin{tabular}{l| c c c}
-%         \toprule
-%         \textbf{Type} & \textbf{Node} & \textbf{Edge} & \textbf{Global} \\
-%         \midrule
-%         \textbf{Attributes} & Type, \(x\), \(y\), \(R_\text{switch}\), \(C\) & \(C_\text{in}\), \(C_\text{out}\), \(R_\text{wire}\), Delay & \(pins\), \(bb\_count\) \\
-%         \bottomrule
-%     \end{tabular}}
-%     \label{tile_feature}
-% \end{table}
-
-
-% \subsection{GAE Pre-training}
-
-% We introduce the EdgeFusion Message Passing Neural Networks (MPNNs) to incorporate edge delay into message passing, and use a GAE to enhance node embeddings with broader structural context.
-
-% \subsubsection{EdgeFusion MPNN Propagation Mechanism}
-% EdgeFusion MPNN incorporates edge delay information directly into the
-% message passing process. Let $h_i$ denote the embedding of node $i$, and
-% let $e_{ij}$ denote the delay feature on the RRG edge from node $j$ to
-% node $i$. The message and update functions are defined as:
-% \begin{equation}
-% m_{ij} = \mathrm{MLP}\bigl([\, h_i \,\Vert\, h_j \,\Vert\, e_{ij} \,]\bigr),
-% \end{equation}
-% \begin{equation}
-% h_i^{\text{new}} = h_i \;+\; \sum_{j \in \mathcal{N}(i)} m_{ij}.
-% \end{equation}
-% Here, $m_{ij}$ is the message sent from neighbor $j$ to node $i$, computed
-% jointly from their embeddings and the physical delay feature on the
-% connecting routing edge. The updated embedding $h_i^{\text{new}}$
-% aggregates messages from all neighbors $\mathcal{N}(i)$, enabling each
-% node to integrate both its own state and the delay-dependent structural
-% information propagated through adjacent routing edges.
-
-% Since $e_{ij}$ reflects the physical delay along an RRG connection, the message passing process effectively mimics delay propagation over the routing architecture. Because information flows strictly along the RRG topology, the model learns structural properties such as wire connectivity, switch-box patterns, and spatial reachability.
-
-% Congestion is implicitly encoded through the number of incoming messages: nodes with higher fan-in or fan-out accumulate more competing delay signals, enabling the model to associate such patterns with increased timing pressure. Through this formulation, EdgeFusion MPNN jointly captures delay behavior, routing topology, and congestion characteristics in the RRG.
-
-% \subsubsection{GAE Framework}
-
-% GAEs are unsupervised models that learn node representations by encoding a graph into a latent space and reconstructing its structure from the latent embeddings.  
-% Let $E_{\theta}$ and $D_{\varphi}$ denote the encoder and decoder, respectively. In our design, both components are implemented based on EdgeFusion MPNN. The encoder maps the input node features into a latent space, and the decoder reconstructs the node features. The entire 
-
-% The reconstruction loss follows the feature-level formulation
-% \begin{equation}
-% \mathcal{L}_{\text{recon.}}
-% = \left\| X - D_{\varphi}\!\left(E_{\theta}(g, X)\right) \right\|_2^2,
-% \end{equation}
-% which forces the latent space to preserve essential routing structures, enabling the model to learn connectivity patterns, local interactions, and global RRG organization.
-
-
-% To prevent overly dispersed latent representations, we introduce a Kullback-Leibler (KL) divergence term that regularizes the latent distribution toward a standard normal prior. The complete training objective is
-% \begin{equation}
-% \mathcal{L}_{\text{total}}
-% = \mathcal{L}_{\text{recon.}}
-% + \alpha \, \mathcal{L}_{\text{KL}},
-% \label{eq:loss}
-% \end{equation}
-% where $\alpha$ controls the strength of the KL penalty.
-
-
-
-% \begin{figure}[t]
-%     \centering
-%     \includegraphics[width=\linewidth]{figure/gae.png}
-%     \caption{GAE Pre-training and Inference.}
-%     \label{fig:gnnpd}
-% \end{figure}
-
-
-% \subsection{Feature Engineering}
-
-% For each SS pair, we construct a feature vector that integrates timing-graph connectivity, physical SS-level information, and routing-architecture context. Let 
-% $\mathbf{f}^{\text{TG}}$, $\mathbf{f}^{\text{SS}}$, and $\mathbf{f}^{\text{RRG}}$ 
-% denote these three groups of features, as illustrated in Fig.~\ref{fig:pf}.
-
-% \subsubsection{Timing-graph features ($\mathbf{f}^{\text{TG}}$).}
-% Each SS edge in the timing graph is characterized by local and global connectivity 
-% statistics, including node in/out degrees, graph density, and the average/max degree. 
-% These indicators correlate with routing complexity, detours, and potential congestion.
-
-% \subsubsection{Physical SS-pair features ($\mathbf{f}^{\text{SS}}$).}
-% We extract macroscopic geometric properties including the Manhattan distance between 
-% source and sink and the width/height of the enclosing bounding box. 
-
-% \subsubsection{Tile-level and GAE-derived features ($\mathbf{f}^{\text{RRG}}$).}
-% As mentioned, each RRG node $v_i$ is mapped to a latent embedding $h_i^{\text{latent}}$.
-% For each SS, we extract the embeddings of its source and sink nodes, and
-% compute the average embedding of all nodes within the net's bounding box as an approximation along potential routing paths. These three embeddings are then concatenated to form $\mathbf{f}^{\text{RRG}}$.
-
-% These three feature groups capture complementary perspectives: timing-graph connectivity models logical complexity, SS-level features reflect geometric distance, and GAE embeddings encode routing-architecture constraints. Their concatenation therefore preserves multi-scale information essential for net delay prediction.
-
-% \subsection{XGBoost-based AT Predictor}
-% We construct a fused feature vector $\mathbf{f}_{\text{SS}} = 
-% [\mathbf{f}^{\text{TG}} \Vert \mathbf{f}^{\text{SS}} \Vert \mathbf{f}^{\text{RRG}}]$ for each SS pair, and use XGBoost~\cite{XGBoost} to predict the post-routing net delay, with labels from VTR~\cite{vtr9}.
-
-
-
-% After predicting net delays for all SS edges, the arrival time $AT(v_t)$ of each timing node $v_t$ is then computed by a single forward traversal using the standard STA recurrence
-% \begin{equation}
-% AT(v_t) = \max_{u_t \in \mathit{pred}(v_t)} \bigl( AT(u_t) + \text{delay}(u_t \rightarrow v_t) \bigr),
-% \end{equation}
-% where $\mathit{pred}(v_t)$ denotes the predecessors of $v_t$. Nodes with the largest arrival time define the critical endpoints, and the critical path is recovered by back-tracing predecessor links. 
-
-
-
-
-% \begin{figure}[t]
-%     \centering
-%     \begin{subfigure}{0.51\linewidth}
-%         \centering
-%         \includegraphics[width=\linewidth]{figure/br.png}
-%         \caption{Backward retiming.}
-%         \label{fig:retiming_backward}
-%     \end{subfigure}
-%     %\vspace{0.5pt}
-%     \begin{subfigure}{0.48\linewidth}
-%         \centering
-%         \includegraphics[width=\linewidth]{figure/fr.png}
-%         \caption{Forward retiming.}
-%         \label{fig:retiming_forward}
-%     \end{subfigure}
-
-%     \caption{Two fundamental retiming moves in ABC.}
-%     \label{fig:retiming_moves}
-% \end{figure}
-
+\alpha
+\left(
+\hat{y}_{\mathcal{G}}-\frac{\mathrm{CPD}}{t_{\max}^{\mathrm{pl}}}
+\right)^2,
+\label{loss}
+\end{equation}
+where \(t_v\) denotes the target arrival time of node \(v\), and
+\(\alpha>0\) balances the two loss terms. During inference, the final
+arrival time and CPD are recovered by rescaling the predictions with
+\(t_{\max}^{\mathrm{pl}}\).
 
 
 
 \section{Experiments}
 \label{exp}
 
+
+
 \subsection{Experimental Setup}
 
-Our dataset consists of 45 circuits drawn from the VTR~\cite{vtr9} and MCNC~\cite{mcnc} benchmark suites, targeting the academic VTR FPGA architecture \texttt{k6\_frac\_N10\_frac\_chain\_mem32K\_40nm}, which is derived from the Stratix IV family. Among these designs, 26 are used for training, while the remaining 19 serve as unseen test circuits. The training set provides approximately 30k intra-tile RRG graph examples for GAE pre-training and about 1M SS pair samples for training the XGBoost-based delay regressor. For each SS pair, the target label is the post-routing net delay extracted from VTR’s static timing analysis engine.
+We construct the dataset from 45 benchmark circuits drawn from the VTR8
+and MCNC benchmark suites. For each design instance, the post-placement
+timing graph is used as the model input, while the supervision is
+obtained from the final post-routing timing analysis in VPR, including
+node-level arrival times and the graph-level critical path delay (CPD).
 
-The predictor is optimized using a mean-squared error (MSE) objective. Within each training design, we further apply a 90/10 sample-level split to form validation subsets used for hyperparameter tuning and early stopping. 
+To ensure sufficient diversity, the dataset is generated along three
+variation axes: resource variation, placement variation, and circuit
+variation. The corresponding configuration space is summarized in
+Table~\ref{tab:config_space}.
 
+We evaluate the proposed model under three generalization protocols:
+cross-circuit generalization, cross-architecture generalization, and
+cross-channel-width generalization. For cross-circuit generalization,
+the 45 circuits are split into 26/5/19 for
+training/validation/testing. For cross-architecture generalization, the
+five architecture variants are partitioned into 3/1/1 groups. For
+cross-channel-width generalization, the five channel-width settings are
+also partitioned into 3/1/1 groups. In each protocol, the test set is
+disjoint from the training set along the corresponding variation axis.
+The remaining variation axes are fully covered in the training,
+validation, and test sets unless otherwise specified.
 
-The complete processing and prediction flow is summarized in Fig.~\ref{fig:framework}, and is implemented on VTR~\cite{vtr9}, Parmys~\cite{vtr9}, and ABC~\cite{abc}. Data extraction is now integrated within the modified VTR9 framework. The extracted data is then transferred to Python via the \texttt{cnpy} library for further processing. Graph data handling and prediction tasks are carried out using the DGL~\cite{dgl} and XGBoost libraries~\cite{XGBoost}.
-
-All experiments are conducted on a Linux server with an Intel Xeon Platinum 8354H CPU (single-core execution) and no GPU acceleration. All circuits before and after retiming are verified for functional equivalence using ABC’s \texttt{dsec} command~\cite{ref:abc_dsec}.
-
-
-\subsection{Timing Predictor Evaluation}
-\subsubsection{GAE Pretraining}
-
-
-
-We compare our proposed EdgeFusion MPNN with three widely used models in the graph neural network domain: GAT~\cite{gat}, GCNII~\cite{gcn2}, and GINE~\cite{gine}. All models are trained on the same pre-training dataset, and we conduct extensive hyperparameter tuning, exploring factors such as the network depth, the learning rate, and the hidden layer dimensions. The reconstruction loss is computed according to Equation~\ref{eq:loss}, with a regularization parameter $\alpha = 0.2$. The results are presented in Table~\ref{tab:gae}.
-
-As demonstrated in the results, EdgeFusion MPNN exhibits a significantly lower reconstruction loss compared to other models, highlighting its superior ability to capture the underlying graph structure and preserve node-level features with greater accuracy. As detailed in Table~\ref{tile_feature}, edge features are incorporated at the source node, which indicates that the model also effectively retains edge delay information.
-Moreover, EdgeFusion MPNN also exhibits a notably low KL loss, suggesting that the learned latent representations are well-regularized. This indicates that the model prevents over-dispersion of node embeddings, which is crucial for prediction.
-
-
-The final hyperparameters are: hidden dimension = 64, latent dimension = 8, number of layers = 2, dropout rate = 0.2.
-
-
-\subsubsection{Ablation Study}
-
-We designed four comparative experiments for the AT prediction: 1) w/o $f\_{ss}$ represents the traditional prediction that does not consider net delay (sets them to 0). 2) w/o $\mathbf{f}^{\text{GAE}}$, w/o $\mathbf{f}^{\text{SS}}$, and w/o $\mathbf{f}^{\text{TG}}$ represent the results after removing specific features. Since our goal is to identify critical paths, we focus only on the arrival time at the endpoints of each path. Each experiment is individually tuned using the validation set. 
-Our final predictions are made with key hyperparameters: max\_depth=7, eta=0.05, subsample=0.7, colsample\_bytree=0.7, min\_child\_weight=10.
-
-We evaluate the results using the coefficient of determination ($R^2$), where higher values indicate better performance. A value of 1 indicates perfect prediction, while values less than 0 suggest that predicting the average value would yield better results. The final results are presented in Table~\ref{tab:cp_predict}.
-
-Our model achieves a prediction accuracy of 0.90, whereas traditional predictions that do not consider net delay often fail to accurately identify the true endpoints. Through ablation experiments, we demonstrate the necessity of each feature. For instance, removing key features such as $f_{ss}$ and $\mathbf{f}^{\text{GAE}}$ significantly reduces prediction accuracy, further validating the contribution of these features to improving performance.
-Notably, the \textit{blob\_merge} circuit has few path endpoints with similar delay values, making it more challenging for prediction. Despite this, our predictor still performs well, demonstrating its robustness even in such difficult cases.
-
-% As shown in Table~\ref{tab:cp_predict}, our model achieves a prediction accuracy of 0.92, compared to 0.19 without net delay. This accuracy is particularly high for large-scale circuits with longer paths, such as \texttt{mcml} and \texttt{sha}. For circuits where most paths share similar logic levels and net delays, such as \texttt{s38584.1} and \texttt{mkPktMerge}, the model's performance is limited. Additionally, while most circuits allow for accurate identification of the top 10 longest paths, circuits involved in packet processing, like the \texttt{mk} series, face challenges due to multiple paths having similar lengths, making it difficult for the model to distinguish between them.
-
-\begin{table}[!t]
-\centering
-\caption{The Loss of GAE on the Test Dataset.}
-\setlength{\tabcolsep}{2pt}
-\begin{tabular}{c |c c  c c  }  
-\toprule
-Layer Type& EdgeFusion MPNN& GAT~\cite{gat}& GINE~\cite{gine}& GCNII~\cite{gcn2}\\
- \midrule
-Val Loss& 1.43& 17.48& 20.09& 67.69\\ \bottomrule
-\end{tabular}
-\label{tab:gae}
-\vspace{10pt}
-\end{table}
+The proposed model is implemented in PyTorch and DGL, and trained using
+Adam with a learning rate of \(10^{-3}\) for 100 epochs. Model training
+is performed on a server equipped with NVIDIA GeForce RTX 4090 GPUs.
+All experiments are conducted under the
+same environment for fair comparison.
 
 \begin{table}[t]
 \centering
-\caption{The Accuracy of AT Prediction on the Test Dataset.}
-\setlength{\tabcolsep}{2pt}
-\begin{tabular}{c |c c  c c  c }  
+\scriptsize
+\caption{Configuration space used for dataset generation.}
+\label{tab:config_space}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{p{1.7cm} p{2.0cm} p{4.5cm}}
 \toprule
-Design& w/o $\mathbf{f}_{\text{SS}}$& w/o $\mathbf{f}^{\text{GAE}}$& w/o $\mathbf{f}^{\text{SS}}$& w/o $\mathbf{f}^{\text{TG}}$ & Ours\\
- \midrule
-bgm
-& 0.64
-& 0.85
-& 0.83
-& 0.83
-& 0.97
-\\
-blob\_merge
-& -2.67
-& 0.25
-& 0.20 
-& 0.13
-& 0.64\\
-boundtop
-& -1.5
-& 0.77
-& 0.79
-& 0.76
-& 0.83
-\\
-ch\_intrinsics
-& -1.19
-& 0.81
-& 0.81
-& 0.81
-& 0.85
-\\
-diffeq1
-& 0.73
-& 0.96
-& 0.97
-& 0.98
-& 0.98
-\\
-diffeq2
-& 0.80 
-& 0.98
-& 0.99
-& 0.98
-& 0.99
-\\
-dsip
-& -1.39
-& 0.79
-& 0.65
-& 0.56
-& 0.86
-\\
-frisc
-& 0.11
-& 0.96
-& 0.94
-& 0.75
-& 0.96
-\\
-mcml
-& 0.78
-& 0.85
-& 0.88
-& 0.89
-& 0.96
-\\
-mk1$^*$ 
-& -4.61
-& 0.49
-& 0.73
-& 0.43
-& 0.84
-\\
-mk2$^*$ 
-& -2.71
-& 0.80 
-& 0.81
-& 0.82
-& 0.87
-\\
-mk3$^*$ 
-& 0.02
-& 0.87
-& 0.87
-& 0.86
-& 0.88
-\\
-or1200
-& -1.36
-& 0.97
-& 0.96
-& 0.88
-& 0.97
-\\
-raygentop
-& -0.29
-& 0.88
-& 0.86
-& 0.83
-& 0.88
-\\
-s38417
-& 0.09
-& 0.92
-& 0.92
-& 0.89
-& 0.94
-\\
-s38584.1
-& -1.07 
-& 0.64
-& 0.69
-& 0.67
-& 0.82
-\\
-sha
-& -0.85
-& 0.97
-& 0.93
-& 0.91
-& 0.98
-\\
-spree
-& 0.87 
-& 0.99
-& 0.99
-& 0.98
-& 0.99
-\\
-tseng
-& 0.33
-& 0.90 
-& 0.90 
-& 0.82
-& 0.92
-\\ \midrule
-Avg. Test& -0.70& 0.82& 0.83& 0.78& 0.90\\
+\textbf{Variation Axis} & \textbf{Factor} & \textbf{Values} \\
+\midrule
+
+\multirow{2}{*}{Resource}
+& Architecture
+& 5 VTR architectures: baseline, depop50, htree0, htree0+routedCLK, and htree0short \\
+
+& Channel width
+& \{50, 80, 110, 150, 200\} \\
+
+\midrule
+
+\multirow{4}{*}{Placement}
+& seed
+& \{1, 2, 3, 4\} \\
+
+& inner\_num
+& \{0.3, 0.5, 0.7, 0.9\} \\
+
+& fix\_pins
+& \{free, random\} \\
+
+& place\_algorithm
+& \{criticality\_timing, slack\_timing\} \\
+
+\midrule
+
+Circuit
+& Benchmarks
+& 45 circuits from the VTR8 and MCNC benchmark suites \\
+
 \bottomrule
 \end{tabular}
-\begin{tablenotes}
-\small
-\item$^*$ mk1: mkDelayWorker32B. mk2: mkPktMerge. mk3: mkSMAdapter4B.
-\end{tablenotes}
-\label{tab:cp_predict}
-\vspace{3pt}
 \end{table}
+
+\subsection{Baselines, Ablation, and Model Configuration}
+
+We compare the proposed model against four representative GNN
+backbones, including GCN~\cite{kipf2017semi},
+GIN~\cite{xu2019powerful},
+GraphSAGE~\cite{hamilton2017inductive}, and
+GAT~\cite{velickovic2018graph}. In addition, we include
+RRG-GAE~\cite{dai2025rrg_gae}, a recent FPGA-specific pre-routing
+arrival-time prediction framework, as a task-specific baseline. For
+RRG-GAE, we directly adopt the original configuration reported in its
+paper.
+
+For the proposed model, the propagation depth is set to \(T=9\), the
+number of propagation blocks is set to \(L=3\), and the hidden
+dimension is set to 128 for all layers. For fair comparison, all
+generic GNN baselines, including GCN, GIN, GraphSAGE, and GAT, are
+configured with 9 layers and the same hidden dimension of 128.
+Specifically, GAT uses 4 attention heads, GraphSAGE uses the mean
+aggregator, and GCN and GIN are both equipped with residual
+connections. These models use the same
+activation function, optimizer, learning rate, number of training
+epochs, and model-selection criterion as the proposed model.
+
+To further analyze the contribution of the proposed design, we consider
+two ablation variants. The first retains only the proposed
+message-passing mechanism while removing the proposed propagation
+structure. The second retains only the proposed propagation structure
+while replacing the message-passing operator with a standard
+GCN layer~\cite{kipf2017semi}. These ablations isolate the contributions
+of the proposed message-passing design and propagation structure,
+respectively.
+
+All reimplemented models are trained using Adam with a learning rate of
+\(10^{-3}\) for 100 epochs, and the final model is selected based on
+the validation loss. ReLU is used as the activation function, and no
+dropout is applied. For multi-task training, the loss coefficient
+\(\alpha\) in Eq.~(\ref{loss}) is set to 1.0.
+
+
 
 
 
@@ -1018,35 +768,44 @@ The average $F_{max}$ improvement for ABC Retiming is 19.40\%, while our method 
 
 
 
-\subsubsection{Runtime Speedup}
-
-We measure the runtime required for pre-routing delay prediction and its speedup over invoking VTR routing and STA. Fig.~\ref{fig:speedup} summarizes the results, where warmer colors indicate designs with longer VTR routing time and cooler colors correspond to smaller, faster designs. As depicted, our method achieves an average speedup of $\mathbf{10.18\times}$, with a maximum of $\mathbf{56.5\times}$ on large designs such as \textit{mcml}. Even on small designs, the predictor still achieves 2–3$\times$ acceleration.
-
-\begin{figure}[t]
-    \centering
-    \includegraphics[width=\linewidth]{figure/speedup.png}
-    \caption{Prediction Speedup Relative to VTR flow.}
-    \label{fig:speedup}
-    \vspace{3pt}
-\end{figure}
 
 
 \section{Application: Predictor-Guided Retiming}
-To achieve physical-aware timing optimization, our framework enhances the heuristic retiming algorithm in ABC~\cite{abc} by addressing its primary limitation: the reliance on a physically-unaware, \textbf{unit-delay model}. In this model, each logic gate is assumed to have an identical delay, allowing the engine to efficiently identify a logical critical path. ABC then iteratively applies forward and backward retiming moves to optimize this path, which involve shifting registers across gates as shown in Fig.~\ref{fig:retiming_moves}.
 
+To demonstrate the practical utility of the proposed timing predictor, we apply it to guide iterative retiming for FPGA timing optimization. Conventional retiming in ABC~\cite{abc} is based on a unit-delay model, where each logic node is assigned an identical delay and optimization decisions are made primarily according to logic depth. Although this abstraction enables efficient heuristic search, it often fails to capture the true timing bottlenecks of FPGA designs, whose critical paths are strongly affected by placement, interconnect delay, and routing resource constraints. As a result, the logic-critical path identified by ABC may deviate substantially from the physically critical path after implementation, leading to suboptimal retiming decisions.
 
+Recent work has started to incorporate physical timing feedback into retiming. In particular, Zhu \textit{et al.}~\cite{ref_iterret} proposed an iterative and verifiable retiming framework that extracts critical-path information from STA reports and uses it to guide subsequent retiming steps. While this improves timing awareness compared with pure logic-level retiming, it still relies on explicit STA feedback from downstream implementation stages to reveal physical criticality. In contrast, our framework introduces a learned physical-aware timing predictor directly into the retiming loop, enabling timing-guided optimization already at the post-placement stage.
 
-While computationally efficient, this purely logical approach is inherently flawed. The critical path identified by ABC often fails to correspond to the true performance-limiting path after physical place-and-route (P\&R), as it neglects crucial physical effects like wire delays and placement congestion. This discrepancy, known as poor timing correlation, leads to misdirected optimization efforts and suboptimal post-P\&R timing results. Our work directly targets this gap by replacing the simplistic unit-delay assumption with accurate, physically-informed timing predictions.
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figure/backward.drawio.pdf}
+        \caption{Backward retiming.}
+        \label{fig:retiming_backward}
+    \end{subfigure}
+    %\vspace{0.5pt}
+    \begin{subfigure}{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figure/forward.drawio.pdf}
+        \caption{Forward retiming.}
+        \label{fig:retiming_forward}
+    \end{subfigure}
 
+    \caption{Two fundamental retiming moves in ABC.}
+    \label{fig:retiming_moves}
+\end{figure}
+
+Fig.~\ref{fig:retiming_moves} illustrates the forward and backward retiming transformations considered in ABC. Based on these primitive moves, our method replaces the original unit-delay guidance with predictor-estimated timing criticality, as summarized in Algorithm~\ref{alg:gnn_retime_final}. Starting from the current netlist \(N_{opt}\), the predictor first identifies the top-$k$ critical paths of the design. The retiming engine then evaluates feasible forward and backward moves only for nodes located on these predicted critical paths, computes the gain of each candidate transformation, and applies the one with the largest benefit. Importantly, after each retiming move, the predictor is re-invoked on the updated netlist so that the critical-path set can be refreshed dynamically as the circuit structure evolves. This process repeats until no profitable move can be found.
 
 
 \makeatletter
 \newcommand{\COMMENT}[1]{\STATE \textcolor{blue}{// #1}}
 \makeatother
-\begin{algorithm}[t]
-\caption{Timing Predictor-enhanced Retiming within ABC}
+\begin{algorithm}[!t]
+\caption{Timing Predictor-enhanced Retiming within ABC Framework}
 \label{alg:gnn_retime_final}
-\small
+\footnotesize
 \begin{algorithmic}[1]
     \Statex \textbf{Input:} Initial netlist $N_{init}$
     \Statex \textbf{Output:} Optimized netlist $N_{opt}$
@@ -1075,31 +834,18 @@ While computationally efficient, this purely logical approach is inherently flaw
             \State $N_{opt} \gets \text{ApplyMove}(N_{opt}, best\_move)$
         \EndIf
     \EndLoop
+    \State \textbf{return} $N_{opt}$
 \end{algorithmic}
 \end{algorithm}
 
-The core of our framework is the replacement of the inaccurate unit-delay model with a highly accurate, physical-aware timing predictor. As detailed in Algorithm~\ref{alg:gnn_retime_final}, our approach integrates this predictive model into an iterative optimization loop with three key stages per iteration: Predict, Evaluate, and Apply.
-First, in the Predict stage, we invoke our timing predictor to identify the top-$k$ post-routing critical paths, $P_{crit}$ (line 4). This is the key to our contribution: by substituting the simplistic unit-delay abstraction with physically-aware data, we ensure that optimization is always focused on the true performance bottlenecks of the design.
-Next, in the Evaluate stage, the algorithm leverages ABC’s proven heuristic to find the most profitable retiming move. It systematically considers feasible forward and backward moves for nodes exclusively along the predicted critical paths ($P_{crit}$), calculating a gain for each potential transformation (lines 5–18). This strategy preserves the efficiency of the heuristic search by constraining it to the most impactful regions of the circuit.
-Finally, the single move yielding the maximum gain is selected and applied to the netlist (line 23). This iterative process continues until no further timing improvements are possible (lines 19–20), at which point the converged, optimized netlist $N_{opt}$ is returned.
+Unlike iterative flows that repeatedly invoke downstream timing analysis during optimization, our method uses the predictor as a lightweight timing oracle inside the retiming loop, while real STA is performed only once after retiming converges for final evaluation. In this way, the method preserves the efficiency of heuristic retiming while substantially improving the physical relevance of the optimization objective. Since the optimization is performed at the post-placement stage, the runtime is dominated by placement rather than routing, and the cost of final routing is negligible in our evaluation. Even though the predictor is re-invoked after every retiming move, the overall end-to-end flow still achieves more than \(10\times\) average speedup over implementation-driven iterative alternatives.
 
+Table~\ref{tab:retime} compares the baseline flow, standard ABC retiming, and our predictor-guided retiming method. Here, \#Node and \#Level denote the number of AIG nodes and the logic depth reported by ABC, respectively. Overall, our method achieves an average \(F_{\max}\) improvement of \(27.24\%\) over the baseline, outperforming the \(19.40\%\) average improvement of standard ABC retiming. These results indicate that replacing logic-depth guidance with physical-aware critical-path prediction leads to higher-quality retiming decisions. The advantage is especially pronounced on routing-dominated designs such as \textit{dsip}, \textit{raygentop}, and \textit{blob\_merge}, where long interconnect paths are the primary performance limiters. In contrast, for circuits whose critical paths are more logic-dominated, such as \textit{diffeq2}, the improvement is more limited, since reducing physical path delay is less effective than directly optimizing logic depth.
 
-\subsection{Physical-aware Retiming}
-
+Table~\ref{tab:retiming_comparison} further compares our approach with prior works. Unlike conventional ABC retiming, which relies on logic depth under a unit-delay model, and unlike prior iterative retiming approaches that depend on STA-derived critical-path feedback, our method integrates predicted timing information directly into the optimization loop at the post-placement stage. This use case highlights that the proposed predictor serves not only as a timing analysis model, but also as an optimization primitive embedded in the CAD flow, enabling physically informed retiming decisions earlier and more efficiently.
 
 
 
-
-Table~\ref{tab:retime} compares the baseline flow, the standard ABC retiming, and our proposed method. In this table, \#Node and \#Level represent the number of AIG nodes and the logic depth reported by ABC, which describe the circuit size and the depth of the longest combinational path, respectively.
-The results show that our method achieves a 27\% improvement in maximum frequency (\(F_\text{max}\)) over the baseline, outperforming the 19\% improvement from the standard ABC retiming flow. For benchmarks marked with "-", the ABC retime command failed due to duplicate CI and CO errors, yielding no results. This performance gain is due to our method's use of physical information for more realistic retiming decisions, and by bypassing the time-consuming routing step of traditional optimization flows. 
-%It is also worth noting that although our method achieves a higher average improvement in \(F_\text{max}\) compared to ABC retiming, the resulting netlists do not always exhibit fewer logic levels, highlighting the inherent discrepancy between logic-level optimization objectives and physical timing behavior on FPGAs.
-
-The benefits of our physical-aware strategy are particularly pronounced for circuits where long, complex routing paths are expected to be the primary performance limiters on an FPGA ( \textit{dsip}, \textit{raygentop}, \textit{blob\_merge}). 
-%Furthermore, for several designs where ABC retiming results in a performance degradation ( \texttt{frisc}, \texttt{s38417}), our method still manages to deliver a significant performance uplift. 
-However, for some circuits dominated by dense logic or a high concentration of macro-blocks, such as \textit{diffeq2}, their critical paths are inherently logic-bound rather than routing-limited. In such cases, our optimization strategy, which primarily targets physical path delays, is naturally less effective than a purely logical approach that directly addresses logic depth. Despite this, the overall results confirm that incorporating physical information early in the flow provides a substantial net benefit, leading to higher-quality final designs.
-
-Table~\ref{tab:retiming_comparison} compares our approach with prior works. Unlike the work~\cite{ref_iterret}, which does not integrate timing prediction and instead relies on the entire flow to obtain timing information via STA, our method integrates timing prediction directly into the retiming process. This integration allows our approach to achieve better results on a broader set of benchmarks.
-Additionally, our method uses predicted timing information at the post-placement stage, providing more accurate and efficient timing optimization compared to the rough estimations~\cite{ref:rta} or simple timing model~\cite{b3}.
 
 \begin{table}[!t]
 \centering
@@ -1119,6 +865,9 @@ Ours                  & FPGA       & \CheckmarkBold                             
 \end{tabular}}
 \vspace{3pt}
 \end{table}
+
+
+
 
 \section{Conclusion}
 
