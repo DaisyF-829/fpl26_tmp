@@ -48,7 +48,7 @@
 
 Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by logic structure, placement, and the architecture-constrained routing fabric. Existing methods either predict coarse routing proxies or operate at restricted design stages, leaving a gap in register-level arrival-time prediction on placed netlists.
 In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling millisecond-level inference.
-Implemented in VTR, PASTE achieves an $R^2$ of 0.98 and a Spearman correlation of 0.98 on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow improves $F_{\max}$ by 8\% on average over logic-only ABC retiming. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
+Implemented in VTR, PASTE achieves an endpoint-level prediction accuracy of 91.56\% and a CPD prediction accuracy of 91.27\% on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow improves $F_{\max}$ by 4.26\% on average over logic-only ABC retiming. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
 
 \end{abstract}
 
@@ -105,7 +105,7 @@ end-to-end arrival-time objective.
 \textbf{Reference} &
 \textbf{Domain} &
 \textbf{Granularity} &
-\begin{tabular}[c]{@{}c@{}}\textbf{Design-}\\\textbf{Aware}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{circuit-}\\\textbf{Aware}\end{tabular} &
 \textbf{Prediction Target} \\
 \midrule
 \cite{WCPNet,wirelength} & FPGA & Circuit-level & \CheckmarkBold & Wirelength \\
@@ -598,7 +598,7 @@ arrival time and CPD are recovered by rescaling the predictions with
 
 \subsection{Experimental Setup}
 
-We construct the dataset from 45 benchmark circuits drawn from the VTR8~\cite{vtr9}
+We construct the dataset from 48 benchmark circuits drawn from the VTR8~\cite{vtr9}
 and MCNC~\cite{mcnc} benchmark suites. For each design instance, the
 post-placement timing graph is used as the model input, and the
 supervision is extracted from the final post-routing timing analysis in
@@ -612,7 +612,7 @@ Table~\ref{tab:config_space}.
 We evaluate the proposed model under three generalization protocols:
 cross-circuit, cross-architecture, and
 cross-channel-width generalization. For cross-circuit generalization,
-the 48 circuits are split into 24/5/19 for
+the 48 circuits are split into 24/7/17 for
 training/validation/testing. For cross-architecture and cross-channel-width
 generalization, the five architecture variants and the five
 channel-width settings are partitioned into 3/1/1 groups. In each 
@@ -620,7 +620,7 @@ protocol, the test set is disjoint from the training set along the
 corresponding variation axis, while the remaining axes are fully
 covered.
 
-The proposed model is implemented in PyTorch~\cite{paszke2019pytorch} and DGL~\cite{dgl}, and trained using
+The proposed model is implemented in PyTorch~\cite{paszke2019pytorch} and PyG~\cite{pyg}, and trained using
 Adam with a learning rate of \(10^{-3}\) for 100 epochs. Model training
 is performed on a server equipped with NVIDIA GeForce RTX 4090 GPUs.
 All experiments are conducted under the
@@ -670,7 +670,7 @@ Circuit
 \end{tabular}
 \end{table}
 
-\subsection{Baselines, Ablation, and Model Configuration}
+\subsection{Baselines and Model Configuration}
 
 We compare the proposed model against four representative GNN
 backbones, including GCN~\cite{kipf2017semi},
@@ -693,117 +693,127 @@ Eq.~(\ref{loss}) is set to 1.0.
 
 
 \subsection{Evaluation Metrics}
-We evaluate prediction quality using four metrics: \(R^2\), MAPE,
-Kendall's \(\tau\), and Spearman's \(\rho\). To better assess the
-ability to distinguish critical paths, all metrics are computed only on
-the endpoint nodes of each circuit. Let \(\mathcal{S}\) denote the
-endpoint-node set, and let \(y_v\) and \(\hat{y}_v\) denote the
-ground-truth and predicted arrival times of endpoint node \(v\),
-respectively. Here, \(R^2\) and MAPE measure prediction accuracy in
-value, while Kendall's \(\tau\) and Spearman's \(\rho\) measure ranking
-consistency. The four metrics are defined as
-\begin{equation}
-R^2
-=
-1-\frac{\sum_{v\in \mathcal{S}}(y_v-\hat{y}_v)^2}
-{\sum_{v\in \mathcal{S}}(y_v-\bar{y})^2},
-\label{eq:r2_metric}
-\end{equation}
+We evaluate the predictor from both value accuracy and ranking quality.
+Given the ground-truth value $y_i$ and the predicted value $\hat{y}_i$ for sample $i$, we first use mean absolute percentage error (MAPE) to measure relative prediction error:
 \begin{equation}
 \mathrm{MAPE}
 =
-\frac{100\%}{|\mathcal{S}|}
-\sum_{v\in \mathcal{S}}
-\left|\frac{y_v-\hat{y}_v}{y_v}\right|,
-\label{eq:mape_metric}
+\frac{1}{N}
+\sum_{i=1}^{N}
+\left|
+\frac{y_i-\hat{y}_i}{y_i}
+\right|,
+\label{eq:mape}
 \end{equation}
+where $N$ is the number of evaluated samples.
+A smaller MAPE indicates more accurate value prediction.
+For ease of interpretation, we also report the corresponding accuracy as
 \begin{equation}
-\tau
-=
-\frac{N_{\mathrm{con}}-N_{\mathrm{dis}}}
-{\binom{|\mathcal{S}|}{2}},
-\label{eq:kendall_metric}
+\mathrm{Accuracy}=1-\mathrm{MAPE},
+\label{eq:acc}
 \end{equation}
+where MAPE is expressed in decimal form.
+Equivalently, when MAPE is reported as a percentage in tables, the accuracy can be written as $100\%-\mathrm{MAPE}(\%)$.
+A larger accuracy indicates better prediction quality.
+
+For ranking quality, we use Spearman's rank correlation coefficient:
 \begin{equation}
 \rho
 =
-\frac{\sum_{v\in \mathcal{S}}(r_v-\bar{r})(\hat{r}_v-\bar{\hat{r}})}
-{\sqrt{\sum_{v\in \mathcal{S}}(r_v-\bar{r})^2}
- \sqrt{\sum_{v\in \mathcal{S}}(\hat{r}_v-\bar{\hat{r}})^2}},
-\label{eq:spearman_metric}
+1-\frac{6\sum_{i=1}^{N} d_i^2}{N(N^2-1)},
+\label{eq:spearman}
 \end{equation}
-where \(\bar{y}\) is the mean of \(y_v\) over \(\mathcal{S}\), \(r_v\)
-and \(\hat{r}_v\) are the ranks of \(y_v\) and \(\hat{y}_v\), and
-\(N_{\mathrm{con}}\) and \(N_{\mathrm{dis}}\) denote the numbers of
-concordant and discordant pairs, respectively. 
+where $d_i$ is the rank difference between the ground-truth and predicted values of sample $i$.
+A larger $\rho$ indicates better consistency between the predicted ranking and the true ranking, which is important for identifying critical endpoints.
 
-Here,
-Eq.~(\ref{eq:r2_metric}) and Eq.~(\ref{eq:mape_metric}) measure
-regression accuracy, while Eq.~(\ref{eq:kendall_metric}) and
-Eq.~(\ref{eq:spearman_metric}) measure ranking consistency. \(R^2\),
-Kendall's \(\tau\), and Spearman's \(\rho\) are larger-is-better
-metrics with a maximum value of 1, whereas MAPE is a
-smaller-is-better metric with 0 indicating perfect prediction.
+We further use Top-10 overlap to evaluate whether the predictor can recover the truly most critical endpoints:
+\begin{equation}
+\mathrm{Top\mbox{-}10\ Overlap}
+=
+\frac{
+\left|
+\mathcal{T}_{\mathrm{pred}}^{10}
+\cap
+\mathcal{T}_{\mathrm{true}}^{10}
+\right|
+}{10}\times 100\%,
+\label{eq:top10}
+\end{equation}
+where $\mathcal{T}_{\mathrm{pred}}^{10}$ and $\mathcal{T}_{\mathrm{true}}^{10}$ denote the sets of the predicted and ground-truth top-10 most critical endpoints, respectively.
+A larger Top-10 overlap means better critical-path identification capability.
+
+In addition, we report the coefficient of determination:
+\begin{equation}
+R^2
+=
+1-
+\frac{\sum_{i=1}^{N}(y_i-\hat{y}_i)^2}
+{\sum_{i=1}^{N}(y_i-\bar{y})^2},
+\label{eq:r2}
+\end{equation}
+where $\bar{y}$ is the mean of the ground-truth values.
+A larger $R^2$ indicates better overall regression quality.
 
 
 \begin{table*}[t]
 \centering
 \scriptsize
-\caption{Comparison of different methods under circuit-level, cross-architecture, and cross-channel-width evaluation settings. For each method, four metrics are reported: \(R^2\), MAPE, Kendall's \(\tau\), and Spearman's \(\rho\). Larger values indicate better performance for \(R^2\), \(\tau\), and \(\rho\), while smaller values are better for MAPE.}
+\caption{Comparison of different methods under circuit-level, cross-architecture, and cross-channel-width evaluation settings. Best results in each row are highlighted in bold.}
 \label{tab:main_results}
-\setlength{\tabcolsep}{2.2pt}
+\setlength{\tabcolsep}{2.8pt}
 \renewcommand{\arraystretch}{1.10}
 \resizebox{\textwidth}{!}{%
-\begin{tabular}{lVccccVccccVccccVccccVcccc}
+\begin{tabular}{lVcccVcccVcccVcccVccc}
 \toprule
-\multirow{2}{*}{\textbf{Instance}} &
-\multicolumn{4}{cV}{\textbf{GCN}} &
-\multicolumn{4}{cV}{\textbf{GIN}} &
-\multicolumn{4}{cV}{\textbf{GraphSAGE}} &
-\multicolumn{4}{cV}{\textbf{GAT}} &
-\multicolumn{4}{c}{\textbf{Ours}} \\
-\cmidrule(lr){2-5}
-\cmidrule(lr){6-9}
-\cmidrule(lr){10-13}
-\cmidrule(lr){14-17}
-\cmidrule(lr){18-21}
-& \(R^2\) & MAPE & \(\tau\) & \(\rho\)
-& \(R^2\) & MAPE & \(\tau\) & \(\rho\)
-& \(R^2\) & MAPE & \(\tau\) & \(\rho\)
-& \(R^2\) & MAPE & \(\tau\) & \(\rho\)
-& \(R^2\) & MAPE & \(\tau\) & \(\rho\) \\
+\multirow{2}{*}{\textbf{Circuit}} &
+\multicolumn{3}{cV}{\textbf{GCN}} &
+\multicolumn{3}{cV}{\textbf{GIN}} &
+\multicolumn{3}{cV}{\textbf{GraphSAGE}} &
+\multicolumn{3}{cV}{\textbf{GAT}} &
+\multicolumn{3}{c}{\textbf{Ours}} \\
+\cmidrule(lr){2-4}
+\cmidrule(lr){5-7}
+\cmidrule(lr){8-10}
+\cmidrule(lr){11-13}
+\cmidrule(lr){14-16}
+& \(R^2\) & MAPE (\%) & \(\rho\)
+& \(R^2\) & MAPE (\%) & \(\rho\)
+& \(R^2\) & MAPE (\%) & \(\rho\)
+& \(R^2\) & MAPE (\%) & \(\rho\)
+& \(R^2\) & MAPE (\%) & \(\rho\) \\
 \midrule
 
-\multicolumn{21}{c}{\textbf{Circuit-level test results}} \\
+\multicolumn{16}{c}{\textbf{Circuit-level test results}} \\
 \midrule
-bgm              & 0.94 & 46.37 & 0.79 & 0.94 & 0.86 & 55.95 & 0.80 & 0.94 & 0.93 & 50.42 & 0.82 & 0.95 & 0.94 & 49.43 & 0.77 & 0.91 & 0.93 & 16.47 & 0.79 & 0.93 \\
-blob\_merge      & 0.86 &  9.61 & 0.69 & 0.86 & 0.87 &  9.35 & 0.70 & 0.86 & 0.85 & 10.21 & 0.67 & 0.84 & 0.84 & 10.42 & 0.67 & 0.84 & 0.91 &  5.39 & 0.75 & 0.91 \\
-boundtop         & 0.86 & 10.15 & 0.71 & 0.88 & 0.87 &  9.35 & 0.71 & 0.88 & 0.85 & 10.01 & 0.69 & 0.87 & 0.87 &  9.76 & 0.70 & 0.88 & 0.85 &  6.71 & 0.78 & 0.87 \\
-ch\_intrinsics   & 0.83 & 10.23 & 0.76 & 0.91 & 0.86 &  9.06 & 0.75 & 0.91 & 0.84 &  9.92 & 0.75 & 0.90 & 0.85 &  9.25 & 0.77 & 0.92 & 0.87 &  5.99 & 0.77 & 0.92 \\
-diffeq1          & 0.96 & 12.71 & 0.71 & 0.88 & 0.94 & 12.39 & 0.69 & 0.87 & 0.92 & 16.00 & 0.66 & 0.85 & 0.92 & 14.83 & 0.66 & 0.85 & 0.99 &  9.93 & 0.77 & 0.92 \\
-diffeq2          & 0.99 & 14.92 & 0.78 & 0.92 & 0.99 & 14.19 & 0.79 & 0.92 & 0.99 & 15.22 & 0.78 & 0.92 & 0.99 & 14.36 & 0.78 & 0.92 & 0.99 & 11.59 & 0.79 & 0.92 \\
-mcml             & 0.99 & 10.31 & 0.76 & 0.91 & 0.99 & 13.88 & 0.76 & 0.90 & 0.99 & 11.23 & 0.75 & 0.90 & 0.99 & 11.28 & 0.74 & 0.90 & 0.99 &  3.61 & 0.85 & 0.92 \\
-mkDelayWorker32B & 0.72 & 13.99 & 0.73 & 0.89 & 0.71 & 13.92 & 0.72 & 0.88 & 0.73 & 13.60 & 0.72 & 0.88 & 0.74 & 13.57 & 0.72 & 0.89 & 0.72 &  9.33 & 0.74 & 0.88 \\
-mkPktMerge       & 0.90 & 10.14 & 0.69 & 0.85 & 0.90 &  9.96 & 0.69 & 0.85 & 0.89 & 11.16 & 0.68 & 0.84 & 0.89 & 10.35 & 0.68 & 0.85 & 0.88 &  7.56 & 0.67 & 0.84 \\
-mkSMAdapter4B    & 0.94 & 11.65 & 0.85 & 0.97 & 0.95 & 10.77 & 0.85 & 0.97 & 0.94 & 12.05 & 0.84 & 0.96 & 0.94 & 11.91 & 0.83 & 0.96 & 0.95 &  7.57 & 0.85 & 0.97 \\
-or1200           & 0.96 &  6.24 & 0.87 & 0.97 & 0.96 &  6.22 & 0.87 & 0.97 & 0.95 &  6.82 & 0.86 & 0.97 & 0.96 &  6.40 & 0.87 & 0.97 & 0.97 &  3.67 & 0.89 & 0.98 \\
-raygentop        & 0.80 & 11.21 & 0.70 & 0.90 & 0.80 & 10.55 & 0.70 & 0.89 & 0.81 & 12.10 & 0.69 & 0.89 & 0.81 & 12.87 & 0.69 & 0.90 & 0.84 &  8.12 & 0.72 & 0.91 \\
-sha              & 0.84 & 10.68 & 0.71 & 0.87 & 0.85 &  9.64 & 0.72 & 0.88 & 0.83 & 11.07 & 0.70 & 0.87 & 0.84 & 11.11 & 0.70 & 0.87 & 0.80 &  6.97 & 0.79 & 0.92 \\
-frisc            & 0.89 & 16.78 & 0.81 & 0.95 & 0.81 & 22.00 & 0.74 & 0.91 & 0.83 & 21.33 & 0.77 & 0.93 & 0.81 & 19.44 & 0.75 & 0.92 & 0.92 &  8.12 & 0.86 & 0.97 \\
-dsip             & 0.89 & 13.42 & 0.63 & 0.85 & 0.90 & 13.11 & 0.62 & 0.83 & 0.74 & 19.56 & 0.70 & 0.89 & 0.94 &  9.06 & 0.70 & 0.89 & 0.86 & 11.55 & 0.68 & 0.85 \\
-tseng            & 0.55 & 37.36 & 0.64 & 0.80 & 0.66 & 29.11 & 0.66 & 0.83 & 0.74 & 28.63 & 0.66 & 0.85 & 0.68 & 33.37 & 0.72 & 0.88 & 0.85 & 12.52 & 0.75 & 0.91 \\
+bgm              & \textbf{0.94} & 46.37 & 0.94 & 0.86 & 55.95 & 0.94 & 0.93 & 50.42 & \textbf{0.95} & \textbf{0.94} & 49.43 & 0.91 & 0.93 & \textbf{16.47} & 0.93 \\
+blob\_merge      & 0.86 &  9.61 & 0.86 & 0.87 &  9.35 & 0.86 & 0.85 & 10.21 & 0.84 & 0.84 & 10.42 & 0.84 & \textbf{0.91} & \textbf{5.39} & \textbf{0.91} \\
+boundtop         & 0.86 & 10.15 & \textbf{0.88} & \textbf{0.87} &  9.35 & \textbf{0.88} & 0.85 & 10.01 & 0.87 & \textbf{0.87} &  9.76 & \textbf{0.88} & 0.85 & \textbf{6.71} & 0.87 \\
+ch\_intrinsics   & 0.83 & 10.23 & 0.91 & 0.86 &  9.06 & 0.91 & 0.84 &  9.92 & 0.90 & 0.85 &  9.25 & \textbf{0.92} & \textbf{0.87} & \textbf{5.99} & \textbf{0.92} \\
+diffeq1          & 0.96 & 12.71 & 0.88 & 0.94 & 12.39 & 0.87 & 0.92 & 16.00 & 0.85 & 0.92 & 14.83 & 0.85 & \textbf{0.99} & \textbf{9.93} & \textbf{0.92} \\
+diffeq2          & \textbf{0.99} & 14.92 & \textbf{0.92} & \textbf{0.99} & 14.19 & \textbf{0.92} & \textbf{0.99} & 15.22 & \textbf{0.92} & \textbf{0.99} & 14.36 & \textbf{0.92} & \textbf{0.99} & \textbf{11.59} & \textbf{0.92} \\
+mcml             & \textbf{0.99} & 10.31 & 0.91 & \textbf{0.99} & 13.88 & 0.90 & \textbf{0.99} & 11.23 & 0.90 & \textbf{0.99} & 11.28 & 0.90 & \textbf{0.99} & \textbf{3.61} & \textbf{0.92} \\
+mkDelayWorker32B & 0.72 & 13.99 & \textbf{0.89} & 0.71 & 13.92 & 0.88 & 0.73 & 13.60 & 0.88 & \textbf{0.74} & 13.57 & \textbf{0.89} & 0.72 & \textbf{9.33} & 0.88 \\
+mkPktMerge       & \textbf{0.90} & 10.14 & \textbf{0.85} & \textbf{0.90} &  9.96 & \textbf{0.85} & 0.89 & 11.16 & 0.84 & 0.89 & 10.35 & \textbf{0.85} & 0.88 & \textbf{7.56} & 0.84 \\
+mkSMAdapter4B    & 0.94 & 11.65 & \textbf{0.97} & \textbf{0.95} & 10.77 & \textbf{0.97} & 0.94 & 12.05 & 0.96 & 0.94 & 11.91 & 0.96 & \textbf{0.95} & \textbf{7.57} & \textbf{0.97} \\
+or1200           & 0.96 &  6.24 & 0.97 & 0.96 &  6.22 & 0.97 & 0.95 &  6.82 & 0.97 & 0.96 &  6.40 & 0.97 & \textbf{0.97} & \textbf{3.67} & \textbf{0.98} \\
+raygentop        & 0.80 & 11.21 & 0.90 & 0.80 & 10.55 & 0.89 & 0.81 & 12.10 & 0.89 & 0.81 & 12.87 & 0.90 & \textbf{0.84} & \textbf{8.12} & \textbf{0.91} \\
+sha              & 0.84 & 10.68 & 0.87 & \textbf{0.85} &  9.64 & 0.88 & 0.83 & 11.07 & 0.87 & 0.84 & 11.11 & 0.87 & 0.80 & \textbf{6.97} & \textbf{0.92} \\
+s38417           & 0.67 & 20.64 & 0.81 & 0.68 & 16.64 & 0.81 & 0.75 & 25.33 & 0.87 & 0.75 & 21.77 & 0.85 & \textbf{0.86} & \textbf{9.11} & \textbf{0.90} \\
+frisc            & 0.89 & 16.78 & 0.95 & 0.81 & 22.00 & 0.91 & 0.83 & 21.33 & 0.93 & 0.81 & 19.44 & 0.92 & \textbf{0.92} & \textbf{8.12} & \textbf{0.97} \\
+dsip             & 0.89 & 13.42 & 0.85 & 0.90 & 13.11 & 0.83 & 0.74 & 19.56 & \textbf{0.89} & \textbf{0.94} & \textbf{9.06} & \textbf{0.89} & 0.86 & 11.55 & 0.85 \\
+tseng            & 0.55 & 37.36 & 0.80 & 0.66 & 29.11 & 0.83 & 0.74 & 28.63 & 0.85 & 0.68 & 33.37 & 0.88 & \textbf{0.85} & \textbf{12.52} & \textbf{0.91} \\
 \midrule
-Average          & 0.87 & 12.74 & 0.74 & 0.90 & 0.87 & 15.59 & 0.74 & 0.89 & 0.86 & 16.21 & 0.73 & 0.89 & 0.88 & 15.46 & 0.74 & 0.90 & 0.90 &  8.44 & 0.78 & 0.91 \\
-
-\specialrule{0.9pt}{2pt}{2pt}
-\multicolumn{21}{c}{\textbf{Cross-architecture test results}} \\
-\midrule
-Test set average  & 0.87 & 12.74 & 0.75 & 0.90 & 0.88 & 12.28 & 0.75 & 0.90 & 0.87 & 13.55 & 0.73 & 0.89 & 0.87 & 12.81 & 0.74 & 0.90 & 0.88 &  8.51 & 0.77 & 0.91 \\
+Average          & 0.85 & 15.67 & 0.89 & 0.86 & 15.65 & 0.89 & 0.86 & 16.74 & 0.89 & 0.87 & 15.83 & 0.89 & \textbf{0.89} & \textbf{8.48} & \textbf{0.91} \\
 
 \specialrule{0.9pt}{2pt}{2pt}
-\multicolumn{21}{c}{\textbf{Cross-channel-width test results}} \\
+\multicolumn{16}{c}{\textbf{Cross-architecture test results}} \\
 \midrule
-Test set average  & 0.85 & 13.52 & 0.74 & 0.90 & 0.86 & 12.96 & 0.73 & 0.89 & 0.86 & 13.74 & 0.73 & 0.89 & 0.86 & 13.08 & 0.73 & 0.89 & 0.79 & 10.01 & 0.77 & 0.91 \\
+Test set average  & 0.87 & 12.74 & 0.90 & \textbf{0.88} & 12.28 & 0.90 & 0.87 & 13.55 & 0.89 & 0.87 & 12.81 & 0.90 & \textbf{0.88} & \textbf{8.51} & \textbf{0.91} \\
+
+\specialrule{0.9pt}{2pt}{2pt}
+\multicolumn{16}{c}{\textbf{Cross-channel-width test results}} \\
+\midrule
+Test set average  & 0.85 & 13.52 & 0.90 & 0.86 & 12.96 & 0.89 & 0.86 & 13.74 & 0.89 & 0.86 & 13.08 & 0.89 & \textbf{0.89} & \textbf{10.01} & \textbf{0.91} \\
 \bottomrule
 \end{tabular}%
 }
@@ -813,7 +823,7 @@ Test set average  & 0.85 & 13.52 & 0.74 & 0.90 & 0.86 & 12.96 & 0.73 & 0.89 & 0.
 \begin{table}[t]
 \centering
 \scriptsize
-\caption{Comparison of Top-10 overlap and MAPE under different evaluation settings. Larger values are better for Top-10 overlap, while smaller values are better for MAPE.}
+\caption{Comparison of Top-10 overlap and MAPE under different evaluation settings. }
 \label{tab:overlap_mape}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.10}
@@ -821,7 +831,7 @@ Test set average  & 0.85 & 13.52 & 0.74 & 0.90 & 0.86 & 12.96 & 0.73 & 0.89 & 0.
 \toprule
 \multirow{2}{*}{\textbf{Method}} &
 \multicolumn{3}{c|}{\textbf{Top-10 overlap}} &
-\multicolumn{3}{c}{\textbf{MAPE}} \\
+\multicolumn{3}{c}{\textbf{CPD MAPE}} \\
 \cmidrule(lr){2-4}
 \cmidrule(lr){5-7}
 & Circuit & Channel & Arch & Circuit & Channel & Arch \\
@@ -911,11 +921,12 @@ mkSMAdapter4B    & 4890  & 35  & 166.94 & 4885  & 35  & 211.73 & 26.84\% & 4898 
 or1200           & 12833 & 148 & 68.46  & 12878 & 143 & 76.98  & 12.44\% & 12845 & 148 & 73.92  & 7.97\% \\
 raygentop        & 4321  & 41  & 165.49 & -     & -   & -      & -      & 4325  & 30  & 254.79 & 53.96\% \\
 sha              & 11793 & 205 & 70.21  & 11835 & 98  & 75.77  & 7.90\% & 11815 & 94  & 76.73  & 9.28\% \\
-frisc            & 8011  & 66  & 75.08  & 8011  & 66  & 72.63  & -3.26\% & 8015  & 61  & 85.92  & 14.44\% \\
+ s38417& 13870& 28& 121.34& 13885& 37& 107.42& -11.47\%& 13885& 29& 130.64&7.67\%\\
+frisc& 8011  & 66  & 75.08  & 8011  & 66  & 72.63  & -3.26\% & 8015  & 61  & 85.92  & 14.44\% \\
 dsip             & 3176  & 10  & 345.68 & 3176  & 10  & 362.09 & 4.75\% & 3176  & 8   & 424.67 & 22.85\% \\
 tseng            & 2501  & 45  & 147.46 & 2501  & 45  & 139.82 & -5.18\% & 2506  & 39  & 156.76 & 6.30\% \\
 \midrule
-\textbf{Average} & \multicolumn{3}{c|}{--} & \multicolumn{3}{c}{--} & \textbf{25.62\%}& \multicolumn{3}{c}{--} & \textbf{32.29\%}\\
+\textbf{Average} & \multicolumn{3}{c|}{--} & \multicolumn{3}{c}{--} & \textbf{26.57\%}& \multicolumn{3}{c}{--} & \textbf{30.83\%}\\
 \bottomrule
 \end{tabular}
 \label{tab:retime}
@@ -925,8 +936,8 @@ tseng            & 2501  & 45  & 147.46 & 2501  & 45  & 139.82 & -5.18\% & 2506 
 
 
 
-\section{Application: Predictor-Guided Retiming}
-
+\section{Application: Predictor-Guided Retimingg}
+                                                                                                                                                                                                                                                                           
 To demonstrate the practical utility of the proposed timing predictor, we apply it to guide iterative retiming for FPGA timing optimization. Conventional retiming in ABC~\cite{abc} is based on a unit-delay model, where each logic node is assigned an identical delay and optimization decisions are made primarily according to logic depth. Although this abstraction enables efficient heuristic search, it often fails to capture the true timing bottlenecks of FPGA designs, whose critical paths are strongly affected by placement, interconnect delay, and routing resource constraints. As a result, the logic-critical path identified by ABC may deviate substantially from the physically critical path after implementation, leading to suboptimal retiming decisions.
 
 Recent work has started to incorporate physical timing feedback into retiming. In particular, Zhu \textit{et al.}~\cite{ref_iterret} proposed an iterative and verifiable retiming framework that extracts critical-path information from STA reports and uses it to guide subsequent retiming steps. While this improves timing awareness compared with pure logic-level retiming, it still relies on explicit STA feedback from downstream implementation stages to reveal physical criticality. In contrast, our framework introduces a learned physical-aware timing predictor directly into the retiming loop, enabling timing-guided optimization already at the post-placement stage.
@@ -993,9 +1004,9 @@ Fig.~\ref{fig:retiming_moves} illustrates the forward and backward retiming tran
 \end{algorithmic}
 \end{algorithm}
 
-Unlike iterative flows that repeatedly invoke downstream timing analysis during optimization, our method uses the predictor as a lightweight timing oracle inside the retiming loop, while real STA is performed only once after retiming converges for final evaluation. In this way, the method preserves the efficiency of heuristic retiming while substantially improving the physical relevance of the optimization objective. Since the optimization is performed at the post-placement stage, the runtime is dominated by placement rather than routing, and the cost of final routing is negligible in our evaluation. Even though the predictor is re-invoked after every retiming move, the overall end-to-end flow still achieves more than \(10\times\) average speedup over implementation-driven iterative alternatives.
+Unlike iterative flows that repeatedly invoke downstream timing analysis during optimization, our method uses the predictor as a lightweight timing oracle inside the retiming loop, while real routing STA is performed only once after retiming converges for final evaluation. In this way, the method preserves the efficiency of heuristic retiming while substantially improving the physical relevance of the optimization objective. Since the optimization is performed at the post-placement stage, the runtime is dominated by placement rather than routing, and the cost of final routing is negligible in our evaluation. 
 
-Table~\ref{tab:retime} compares the baseline flow, standard ABC retiming, and our predictor-guided retiming method. Here, \#Node and \#Level denote the number of AIG nodes and the logic depth reported by ABC, respectively. Overall, our method achieves an average \(F_{\max}\) improvement of \(27.24\%\) over the baseline, outperforming the \(19.40\%\) average improvement of standard ABC retiming. These results indicate that replacing logic-depth guidance with physical-aware critical-path prediction leads to higher-quality retiming decisions. The advantage is especially pronounced on routing-dominated designs such as \textit{dsip}, \textit{raygentop}, and \textit{blob\_merge}, where long interconnect paths are the primary performance limiters. In contrast, for circuits whose critical paths are more logic-dominated, such as \textit{diffeq2}, the improvement is more limited, since reducing physical path delay is less effective than directly optimizing logic depth.
+Table~\ref{tab:retime} compares the baseline flow, standard ABC retiming, and our predictor-guided retiming method. Here, \#Node and \#Level denote the number of AIG nodes and the logic depth reported by ABC, respectively. Overall, our method achieves an average \(F_{\max}\) improvement of \(30.83\%\) over the baseline, outperforming the \(26.57\%\) average improvement of standard ABC retiming. These results indicate that replacing logic-depth guidance with physical-aware critical-path prediction leads to higher-quality retiming decisions. The advantage is especially pronounced on routing-dominated designs such as \textit{dsip}, \textit{raygentop}, and \textit{blob\_merge}, where long interconnect paths are the primary performance limiters. In contrast, for circuits whose critical paths are more logic-dominated, such as \textit{diffeq2}, the improvement is more limited, since reducing physical path delay is less effective than directly optimizing logic depth.
 
 Table~\ref{tab:retiming_comparison} further compares our approach with prior works. Unlike conventional ABC retiming, which relies on logic depth under a unit-delay model, and unlike prior iterative retiming approaches that depend on STA-derived critical-path feedback, our method integrates predicted timing information directly into the optimization loop at the post-placement stage. This use case highlights that the proposed predictor serves not only as a timing analysis model, but also as an optimization primitive embedded in the CAD flow, enabling physically informed retiming decisions earlier and more efficiently.
 
@@ -1026,8 +1037,13 @@ Ours                  & FPGA       & \CheckmarkBold                             
 
 \section{Conclusion}
 
-We proposed a physical-aware retiming method that leverages a timing predictor to accelerate the process. By effectively extracting features such as congestion, topology, and geometric distance, the predictor enables accurate pre-routing predictions, which enhance the efficiency of retiming. Our approach demonstrates significant performance improvements over traditional methods.
+FPGA pre-routing timing estimation remains challenging because final timing is jointly determined by logic structure, placement, and routing resources, while the exact routing information is still unavailable before detailed routing.
 
+In this paper, we presented PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE operates on the post-placement timing graph through a heterogeneous GNN formulation, so that both timing dependencies and node types can be naturally modeled. To better capture routing-induced delay variation, we further introduced design-aware RRG pruning together with physically informative features, including node density and edge usage density. In addition, the proposed TPN adopts a two-stage propagation scheme: local heterogeneous message passing with sum aggregation, followed by long-range delay-weighted max propagation, which explicitly aligns with the max-plus semantics of static timing analysis.
+
+Experimental results show that PASTE achieves a circuit-level MAPE of 8.84\%, while requiring less than one second of inference time after placement. As a downstream application, PASTE-guided retiming improves $F_{\max}$ by 30.83\%, outperforming ABC retiming, which achieves 26.57\%.
+
+These results demonstrate that a physically informed learned surrogate can serve as an effective timing oracle in FPGA CAD flows, enabling timing-driven optimization before routing. Future work includes extending PASTE to multi-clock designs and integrating the predictor into placement refinement.
 
 
 
