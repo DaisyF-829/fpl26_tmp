@@ -47,7 +47,7 @@
 
 
 Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by logic structure, placement, and the architecture-constrained routing fabric. Existing methods either predict coarse routing proxies or operate at restricted design stages, leaving a gap in register-level arrival-time prediction on placed netlists.
-In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling millisecond-level inference.
+In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling sub-level inference.
 Implemented in VTR, PASTE achieves an endpoint-level prediction accuracy of 91.56\% and a CPD prediction accuracy of 91.27\% on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow improves $F_{\max}$ by 4.26\% on average over logic-only ABC retiming. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
 
 \end{abstract}
@@ -105,12 +105,12 @@ end-to-end arrival-time objective.
 \textbf{Reference} &
 \textbf{Domain} &
 \textbf{Granularity} &
-\begin{tabular}[c]{@{}c@{}}\textbf{circuit-}\\\textbf{Aware}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Circuit-}\\\textbf{Aware}\end{tabular} &
 \textbf{Prediction Target} \\
 \midrule
 \cite{WCPNet,wirelength} & FPGA & Circuit-level & \CheckmarkBold & Wirelength \\
 \cite{bbcong,conghls,fGREP} & FPGA & Region-level & \CheckmarkBold & Congestion \\
-\cite{dl_routability,routenet,sta_rout_mux} & FPGA & Circuit-level & \CheckmarkBold & Routability \\
+\cite{dl_routability,sta_rout_mux} & FPGA & Circuit-level & \CheckmarkBold & Routability \\
 \cite{hlspd} & FPGA & Op-level & \CheckmarkBold & Operation delay \\
 \cite{fpga_ml_delay} & FPGA & Net-level & \XSolidBrush & Net delay \\
 \cite{air} & FPGA & Net-level & \XSolidBrush & Routing cost \\
@@ -167,6 +167,14 @@ The main contributions of this work are summarized as follows:
     surrogate through a predictor-guided physical-aware retiming
     application.
 \end{itemize}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.75\linewidth]{figure/framework (2).png}
+    \caption{Mapping physical routing elements to RRG and the timing graph.}
+    \label{fig:framework}
+    \vspace{4pt}
+\end{figure}
 
 
 
@@ -345,7 +353,7 @@ Table~\ref{tab:edge_feat_timing}.
 \caption{Node features used in the timing graph.}
 \label{tab:node_feat_timing}
 \footnotesize
-\begin{tabular}{lll}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lll@{}}
 \toprule
 \textbf{Feature Group} & \textbf{Feature} & \textbf{Type}\\
 \midrule
@@ -357,22 +365,19 @@ Table~\ref{tab:edge_feat_timing}.
 \midrule
 \multirow{4}{*}{Topology}
 & logic level
-& integer
-\\
+& integer\\
 & global longest logic level
-& integer
-\\
+& integer\\
 & node type
 & one-hot\\
 & fanin / fanout
-& integer
-\\
+& integer\\
 \midrule
 \multirow{1}{*}{Timing Prior}
 & post-placement arrival-time prior
 & float\\
 \bottomrule
-\end{tabular}
+\end{tabular*}
 \end{table}
 
 \begin{table}[t]
@@ -380,7 +385,7 @@ Table~\ref{tab:edge_feat_timing}.
 \caption{Edge features used in the timing graph.}
 \label{tab:edge_feat_timing}
 \footnotesize
-\begin{tabular}{lll}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lll@{}}
 \toprule
 \textbf{Feature Group} & \textbf{Feature} & \textbf{Type}\\
 \midrule
@@ -396,7 +401,7 @@ Table~\ref{tab:edge_feat_timing}.
 & edge-usage-density max / avg
 & float\\
 \bottomrule
-\end{tabular}
+\end{tabular*}
 \end{table}
 
 For each timing node \(v\in\mathcal{V}_{\mathrm{tg}}\), we compute its
@@ -453,7 +458,7 @@ also used as edge features.
 \subsection{Timing Propagation Network}
 
 We propose a \emph{Timing Propagation Network} (TPN) for pre-routing
-timing estimation. As illustrated in Fig.~\ref{fig:tpn}, it consists of
+timing estimation. It consists of
 a heterogeneous message-passing stage, a delay-weighted propagation
 stage, and two prediction heads for node-level and graph-level outputs.
 Let \(\mathcal{V}_{\mathrm{tg}}\) denote the set of timing nodes, and let
@@ -680,8 +685,7 @@ GAT~\cite{velickovic2018graph}.
 
 For the proposed model, the propagation depth is set to \(T=9\), the
 number of propagation blocks is set to \(L=3\), and the hidden
-dimension is set to 128 for all layers. For fair comparison, all
-generic GNN baselines, are configured with 9 layers and the same hidden dimension of 128.
+dimension is set to 128 for all layers. For fair comparison, all generic GNN baselines are configured with 9 layers, the same hidden dimension of 128, and an identical graph-level prediction head.
 Specifically, GAT uses 4 attention heads, GraphSAGE uses the mean
 aggregator, and GCN and GIN are both equipped with residual
 connections. All models are trained using Adam with a learning rate of
@@ -852,7 +856,7 @@ Table~\ref{tab:main_results} reports the comparison with four generic
 GNN baselines under circuit-level, cross-architecture, and
 cross-channel-width evaluation settings. Overall, the proposed model
 achieves the best average performance under the circuit-level setting,
-with \(R^2=0.90\), MAPE \(=8.44\), Kendall's \(\tau=0.78\), and
+with \(R^2=0.89\), MAPE \(=8.48\), and
 Spearman's \(\rho=0.91\). Compared with the strongest generic baseline
 in this setting, the proposed model reduces MAPE substantially while
 also improving the ranking-based metrics, indicating that it provides
@@ -936,8 +940,8 @@ tseng            & 2501  & 45  & 147.46 & 2501  & 45  & 139.82 & -5.18\% & 2506 
 
 
 
-\section{Application: Predictor-Guided Retimingg}
-                                                                                                                                                                                                                                                                           
+\section{Application: Predictor-Guided Retiming}
+           
 To demonstrate the practical utility of the proposed timing predictor, we apply it to guide iterative retiming for FPGA timing optimization. Conventional retiming in ABC~\cite{abc} is based on a unit-delay model, where each logic node is assigned an identical delay and optimization decisions are made primarily according to logic depth. Although this abstraction enables efficient heuristic search, it often fails to capture the true timing bottlenecks of FPGA designs, whose critical paths are strongly affected by placement, interconnect delay, and routing resource constraints. As a result, the logic-critical path identified by ABC may deviate substantially from the physically critical path after implementation, leading to suboptimal retiming decisions.
 
 Recent work has started to incorporate physical timing feedback into retiming. In particular, Zhu \textit{et al.}~\cite{ref_iterret} proposed an iterative and verifiable retiming framework that extracts critical-path information from STA reports and uses it to guide subsequent retiming steps. While this improves timing awareness compared with pure logic-level retiming, it still relies on explicit STA feedback from downstream implementation stages to reveal physical criticality. In contrast, our framework introduces a learned physical-aware timing predictor directly into the retiming loop, enabling timing-guided optimization already at the post-placement stage.
@@ -1024,7 +1028,7 @@ Table~\ref{tab:retiming_comparison} further compares our approach with prior wor
                       & \textbf{FPGA/ASIC}  & \begin{tabular}[c]{@{}c@{}}\textbf{Iterative}\\ \textbf{Support}\end{tabular} & \begin{tabular}[c]{@{}c@{}}\textbf{Timing}\\ \textbf{Predict}\end{tabular} & \begin{tabular}[c]{@{}c@{}}\textbf{Retiming}\\ \textbf{Stage}\end{tabular} & \textbf{Delay Model Used}       \\ \midrule
 ABC~\cite{ref:abcret} & FPGA, ASIC & \XSolidBrush                                                & \XSolidBrush                                             & Before Mapping                                             & Logic Depth          \\
 ~\cite{ref_iterret}   & FPGA       & \CheckmarkBold                                              & \XSolidBrush                                             & Post STA                                                 & STA                    \\
-~\cite{ref:latret}    & ASIC       & \XSolidBrush                                                & \XSolidBrush                                             & Gate-Level                                               & STA                    \\
+~\cite{b6}    & ASIC       & \XSolidBrush                                                & \XSolidBrush                                             & Gate-Level                                               & STA                    \\
 \cite{b3}               & FPGA       & \XSolidBrush                                                & \XSolidBrush                                             & Post Routing                                             & Simple Timing Model    \\
 RTA~\cite{ref:rta}    & ASIC       & \XSolidBrush                                                & \XSolidBrush                                             & Post Placement                                           & Rough Estimation       \\
 Ours                  & FPGA       & \CheckmarkBold                                              & \CheckmarkBold                                           & Post Placement                                                 & Predicted Timing Info. \\ \bottomrule
@@ -1041,7 +1045,7 @@ FPGA pre-routing timing estimation remains challenging because final timing is j
 
 In this paper, we presented PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE operates on the post-placement timing graph through a heterogeneous GNN formulation, so that both timing dependencies and node types can be naturally modeled. To better capture routing-induced delay variation, we further introduced design-aware RRG pruning together with physically informative features, including node density and edge usage density. In addition, the proposed TPN adopts a two-stage propagation scheme: local heterogeneous message passing with sum aggregation, followed by long-range delay-weighted max propagation, which explicitly aligns with the max-plus semantics of static timing analysis.
 
-Experimental results show that PASTE achieves a circuit-level MAPE of 8.84\%, while requiring less than one second of inference time after placement. As a downstream application, PASTE-guided retiming improves $F_{\max}$ by 30.83\%, outperforming ABC retiming, which achieves 26.57\%.
+Experimental results show that PASTE achieves a circuit-level MAPE of 8.48\%, while requiring less than one second of inference time after placement. As a downstream application, PASTE-guided retiming improves $F_{\max}$ by 30.83\%, outperforming ABC retiming, which achieves 26.57\%.
 
 These results demonstrate that a physically informed learned surrogate can serve as an effective timing oracle in FPGA CAD flows, enabling timing-driven optimization before routing. Future work includes extending PASTE to multi-clock designs and integrating the predictor into placement refinement.
 
