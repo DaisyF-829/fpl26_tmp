@@ -29,14 +29,11 @@
 \maketitle
 
 \begin{abstract}
-
-In logic synthesis, improvement of circuit quality-of-results (QoR) typically relies on the exploration of optimization sequences, which includes an exponentially large search space. However, existing sequence-exploration approaches have not fully exploited empirically validated optimization macro-sequences. In addition, reliance on sequence similarity for QoR estimation may misguide the search and lead to suboptimal local optima. In this paper, we introduce a Bayesian optimization framework for logic synthesis over variable-length macro-action sequences, guided by a multi-task surrogate model that jointly predicts area and delay.
-The surrogate prunes low-quality candidates before costly simulation, while its sequence embeddings modulate the SSK kernel to enrich similarity judgments beyond syntactic matching. Experimental results demonstrate that the proposed model and search framework scale to larger sequential circuits and industrial designs, achieving an $R^2$ value of 0.95 on the XXX benchmark suite and delivering up to 10× faster exploration while maintaining virtually identical QoR compared with state-of-the-art flows.
-
+Logic synthesis sequence optimization plays a critical role in determining the quality of results (QoR) of modern digital design flows. Given the highly discrete and combinatorial search space, a variety of automatic searching methods have been proposed. However, most existing methods assume a fixed sequence length, do not explicitly exploit empirically validated macro command patterns, and still rely on frequent exact ABC invocations during search, resulting in high runtime overhead. In addition, these methods still rely on frequent exact ABC invocations during search, resulting in high runtime overhead. In this paper, we propose a predictor-enhanced Bayesian optimization framework with a hybrid-action search space. At the core of the framework is an MTL-based predictor that jointly estimates area and delay for a given circuit and synthesis sequence, and is used to support warm-start initialization, candidate pruning, and evaluation skipping during search. The search space combines atomic commands and empirically effective command compositions, and further supports variable-length sequence optimization through \textsc{nop}-based encoding. To improve discrete surrogate modeling, we adopt an LSTM-enhanced SSK kernel that captures both string-level similarity and optimization-effect similarity among synthesis sequences. Experiments on 60 circuits from EPFL, OpenABC-D, and VTR benchmarks show that the proposed method achieves the best ADP on 50 out of 60 benchmarks, reducing the final ADP by 30.4\%, 13.8\%, and 8.5\% on average compared with FlowTune, BOiLS, and LOFMPL, respectively, while delivering more than 15$\times$ speedup on average.
 \end{abstract}
 
 \begin{IEEEkeywords}
-component, formatting, style, styling, insert.
+Bayesian optimization, logic synthesis, Multi-task learning.
 \end{IEEEkeywords}
 
 \section{Introduction}
@@ -44,11 +41,22 @@ component, formatting, style, styling, insert.
 
 Logic synthesis remains one of the most critical stages in modern digital design flows, serving as the bridge between high-level circuit descriptions and technology-mapped implementations. Although the underlying transformations in tools such as ABC are individually well understood, the final quality of results (QoR) is often determined less by any single optimization command than by the sequence in which many such commands are composed. A small change in ordering can alter the structural evolution of the intermediate netlist, and can ultimately lead to substantially different area, delay, or area--delay product (ADP). As a result, synthesis-sequence design has long been recognized as a combinatorial optimization problem with a large, discrete, and highly non-convex search space.
 
-To reduce reliance on hand-crafted scripts, recent work has increasingly turned to machine learning and black-box optimization for automatic sequence exploration. Representative directions include Bayesian optimization, reinforcement learning, and bandit-based search. BOiLS formulates logic synthesis as a Bayesian optimization problem and shows that Gaussian-process-based search can improve sample efficiency over earlier automated methods. FlowTune instead casts flow exploration as a domain-specific multi-armed bandit problem and emphasizes end-to-end practicality across a wider design flow. More recently, LOFMPL has pushed toward larger circuits by combining MFFC-based partitioning with reinforcement learning, thereby improving the scalability of learning-based sequence exploration. These methods have significantly advanced automatic synthesis tuning, yet they still expose a persistent tension between search quality and evaluation cost. In particular, even a sample-efficient optimizer must repeatedly invoke the synthesis tool for exact QoR evaluation, which quickly becomes the dominant bottleneck when the search budget grows or when the design itself becomes larger and more heterogeneous.
+To reduce reliance on hand-crafted scripts, recent work has increasingly turned to machine learning and black-box optimization for automatic sequence exploration. Representative directions include Bayesian optimization (BO), reinforcement learning, and bandit-based search. BOiLS formulates logic synthesis as a BO problem and shows that Gaussian-process-based (GP-based) search can improve sample efficiency over earlier automated methods. FlowTune instead casts flow exploration as a domain-specific multi-armed bandit problem and emphasizes end-to-end practicality across a wider design flow. More recently, LOFMPL has pushed toward larger circuits by combining MFFC-based partitioning with reinforcement learning, thereby improving the scalability of learning-based sequence exploration. These methods have significantly advanced automatic synthesis tuning, yet they still expose a persistent tension between search quality and evaluation cost. In particular, even a sample-efficient optimizer must repeatedly invoke the synthesis tool for exact QoR evaluation, which quickly becomes the dominant bottleneck when the search budget grows or when the design itself becomes larger and more heterogeneous.
 
-In this paper, we propose a predictor-enhanced Bayesian optimization framework for logic synthesis sequence search. The framework first represents each design as an AIG-derived directed graph in which complemented edges are converted into explicit NOT nodes and latches are preserved as sequential-boundary nodes, allowing the model to handle both combinational and sequential circuits in a unified way. A graph encoder captures structural information from the circuit, while an LSTM-based sequence encoder models the semantics of variable-length synthesis recipes after macro expansion. On top of the resulting joint representation, we design a multi-task predictor that estimates both area and delay and uses cross-task multi-head attention to exchange information between these two physically coupled objectives. Rather than using this predictor as a stand-alone oracle, we integrate it into the Bayesian optimization loop for warm-start initialization, candidate pruning, and evaluation skipping, while retaining the Gaussian process as the main probabilistic model for acquisition-driven search. To further improve surrogate modeling in the discrete sequence space, we enrich the sequence kernel with learned embedding information so that the optimizer can leverage both symbolic subsequence structure and latent semantic similarity.
+In this paper, we propose a predictor-enhanced BO framework for logic synthesis sequence search. The framework first represents each design as an and-inverter-graph-derived (AIG-derived) directed graph in which complemented edges are converted into explicit NOT nodes and latches are preserved as sequential-boundary nodes, allowing the model to handle both combinational and sequential circuits in a unified way. A graph encoder captures structural information from the circuit, while an LSTM-based sequence encoder models the semantics of synthesis recipes after macro expansion. On top of the resulting joint representation, we design a multi-task predictor for joint area and delay estimation, where cross-task multi-head attention is used to capture the strong coupling between the two QoR objectives. Rather than treating the predictor and BO as separate components, we tightly couple them in a predictor-guided search framework. The search is conducted over a hybrid action space consisting of atomic actions, macro actions, and \textsc{nop}-based variable-length encoding. Within this framework, the predictor provides area--delay-aware sequence representations that enrich the GP surrogate through an LSTM-enhanced subsequence string kernel (SSK). It is also used for warm-start initialization, candidate pruning, and evaluation skipping during acquisition-driven search over a discrete candidate pool. Our experiments are conducted on 60 circuits from the EPFL, OpenABC-D, and VTR benchmarks. The results show that the predictor achieves area/delay $R^2$ values of 0.98/0.99 on combinational circuits and 0.94/0.96 on sequential circuits. Compared with three representative open-source sequence-search baselines including LOFMPL, BOiLS, and FlowTune, the proposed framework achieves the best ADP on 50 out of 60 benchmarks. Moreover, the proposed framework reduces the final ADP by 30.4\%, 13.8\%, and 8.5\%. It also achieves more than 15 speedup over all three baselines.
 
-This design is motivated by a simple observation: in logic synthesis, the most valuable predictor is not necessarily the one that replaces exact evaluation, but the one that reduces the number of unnecessary exact evaluations while preserving the global search behavior of a principled optimizer. Our experiments are conducted on 65 circuits drawn from the EPFL, ABCD, and VTR benchmarks, where the proposed framework is compared against three representative open-source sequence-search baselines, namely LOFMPL, BOiLS, and FlowTune, under a matched computational budget. The auxiliary predictor itself is evaluated on 112 circuits collected from VTR, OpenABC-D, and EPFL, spanning both combinational and sequential designs. The results show that the predictor achieves strong regression accuracy on both circuit classes, reaching area/delay $R^2$ values of 0.98/0.99 on combinational circuits and 0.94/0.96 on sequential circuits. More importantly, when integrated into the search loop, the learned model substantially reduces expensive oracle usage: in the ablation study, the full framework lowers the average number of ABC calls from 200 to 124 and reduces runtime from 7551.82\,s to 2140.38\,s, while maintaining competitive final ADP. Taken together, these results suggest that predictor-enhanced Bayesian optimization is a promising direction for scalable logic synthesis exploration, especially when the search space is large, the evaluation cost is dominant, and the target circuits extend beyond the small combinational regimes that have been the focus of much prior work.
+The contributions of this paper are summarized as follows:
+\begin{itemize}
+    \item We propose a predictor-enhanced Bayesian optimization framework for logic synthesis sequence search, which improves both optimization quality and search efficiency.
+    
+    \item We define a hybrid action space that combines atomic actions and macro actions, and enable variable-length synthesis sequence search through \textsc{nop}-based encoding.
+    
+    \item We develop a unified multi-task QoR predictor for combinational and sequential circuits based on an AIG-derived graph representation and joint graph--sequence encoding, with cross-task attention to capture the coupling between area and delay.
+    
+    \item We integrate the predictor into Bayesian optimization via an LSTM-enhanced SSK kernel, warm-start initialization, candidate pruning, and evaluation skipping. Experiments show better ADP gains and more than 15$\times$ speedup over representative open-source baselines.
+\end{itemize}
+
+The rest of this paper is organized as follows. Section II presents the preliminary background. The proposed multi-task QoR predictor is introduced in Section III. Section IV details the proposed Bayesian optimization framework for synthesis sequence search. Section V provides the experimental results. Finally, Section VI concludes the paper.
 
 \begin{table*}[t]
 \centering
@@ -91,7 +99,7 @@ LOFMPL~\cite{zhu2026lofmpl}
 
 % Bayesian Optimization (BO) optimizes black-box functions by constructing a computationally inexpensive surrogate model, making it well-suited for logic synthesis sequence optimization, where high evaluation costs are a major concern.
 
-BO consists of two components: the surrogate model and the acquisition function. The surrogate model $\hat{f}$ approximates the unknown objective function using a set of evaluated samples $\mathcal{D}_t = \{(\mathbf{x}_i, y_i)\}_{i=1}^{t}$, where $y_i = f(\mathbf{x}_i)$. It provides a cheap estimate and a measure of confidence for unseen candidate points.
+BO consists of two components: the surrogate model and the acquisition function. The surrogate model $\hat{f}$ approximates the unknown objective function using a set of evaluated samples $\mathcal{D}_t = \{(\mathbf{x}_i, y_i)\}_{i=1}^{t}$, where $y_i = f(\mathbf{x}_i)$. It provides a cheap estimate and a measure of confidence for unseen candidate.
 
 The acquisition function $a(\mathbf{x}; \hat{f})$ evaluates candidate points by balancing exploitation and exploration. BO iterates through model fitting, candidate selection, function evaluation, and dataset updating until the evaluation budget is exhausted.
 
@@ -134,9 +142,9 @@ model capture shared yet task-relevant interactions.
 
 % ============================================================
 
-\section{Multi-Learning-Task-absed QoR Predictor}
+\section{Multi-Learning-Task-based QoR Predictor}
 
-\subsection{Data Pre-processing}
+\subsection{Feature Encoding}
 
 In logic synthesis, circuits are first parsed into and-inverter graphs
 (AIGs), which provide a compact structural representation of logic
@@ -219,7 +227,12 @@ which is then fed into the downstream predictor.
 
 
 \subsection{Multi-Task-Learning-based QoR Predictor}
-
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\linewidth]{predictor.png}
+    \caption{Multi-Task-Learning-based QoR Predictor.}
+    \label{fig:predictor}
+\end{figure*}
 Given the joint representation \(\mathbf{z}\), our MTL-based predictor
 simultaneously estimates both area and delay. As shown in
 Fig.~\ref{fig:predictor}, the predictor consists of three main
@@ -314,10 +327,7 @@ projected to obtain a fused sharing feature:
 \mathbf{A}_{a,1}^{(j)}.
 \label{eq:share_a_fuse}
 \end{equation}
-The residual connection on \(\mathbf{A}_{a,1}^{(j)}\) preserves the
-dominant task-specific component for area prediction, while
-\(\mathbf{A}_{a,2}^{(j)}\) provides auxiliary cross-task information
-from the delay branch. The updated area feature is then obtained as
+The updated area feature is then obtained as
 \begin{equation}
 \mathbf{F}_{a}^{(j+1)}
 =
@@ -348,137 +358,6 @@ The model is trained by jointly minimizing the mean squared errors of
 the two regression targets, and the predicted area and delay are further used to enhance Bayesian optimization.
 
 \section{Bayesian Optimization Framework}
-
-% Requires:
-% \usepackage{tikz}
-% \usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
-
-\begin{figure*}[t]
-\centering
-\footnotesize
-\begin{tikzpicture}[
-    >=Latex,
-    box/.style={
-        draw,
-        rounded corners=2pt,
-        align=center,
-        inner sep=3pt,
-        minimum height=8mm
-    },
-    line/.style={-Latex, thick},
-    dashline/.style={-Latex, thick, dashed}
-]
-
-% ===================== Row 1: input / initialization =====================
-\node[box, text width=2.2cm] (input) at (0,0) {
-    \textbf{Input Circuit}\\
-    $C$
-};
-
-\node[box, text width=3.8cm] (space) at (4.4,0) {
-    \textbf{Hybrid Action Space}\\
-    atomic actions + macro actions + \textsc{nop}
-};
-
-\node[box, text width=4.5cm] (init) at (9.9,0) {
-    \textbf{Predictor-Guided Initialization}\\
-    build initial pool $\rightarrow$ predictor ranking\\
-    select top-$n_0$ sequences
-};
-
-\node[box, text width=3.1cm] (eval0) at (15.2,0) {
-    \textbf{Exact ABC Evaluation}\\
-    initial observations $\mathcal{D}$
-};
-
-\draw[line] (input.east) -- (space.west);
-\draw[line] (space.east) -- (init.west);
-\draw[line] (init.east) -- (eval0.west);
-
-% ===================== Row 2: predictor branch =====================
-\node[box, text width=2.9cm] (pseudo) at (7.3,-2.3) {
-    \textbf{Pseudo Observations}\\
-    GP warm start: $\tilde{\mathcal{D}}$
-};
-
-\node[box, text width=3.2cm] (pred) at (11.5,-2.3) {
-    \textbf{Auxiliary Neural Predictor}\\
-    QoR prediction\\
-    LSTM embeddings
-};
-
-% ===================== Loop boundary =====================
-\draw[rounded corners=3pt] (1.6,-7.5) rectangle (17.0,-3.5);
-\node[font=\bfseries] at (9.3,-3.15) {Iterative BO Search Loop};
-
-% ===================== Row 3: main BO loop =====================
-\node[box, text width=3.1cm] (gp) at (3.9,-4.9) {
-    \textbf{GP Surrogate with CC-SSK}\\
-    fit on $\mathcal{D}\cup\tilde{\mathcal{D}}$\\
-    posterior mean/variance
-};
-
-\node[box, text width=3.0cm] (cand) at (7.6,-4.9) {
-    \textbf{Candidate Pool Generation}\\
-    trust-region / elite-pool / random
-};
-
-\node[box, text width=2.9cm] (prune) at (11.2,-4.9) {
-    \textbf{Predictor-Based Pruning}\\
-    remove poor candidates
-};
-
-\node[box, text width=3.0cm] (acq) at (14.9,-4.9) {
-    \textbf{Acquisition Scoring}\\
-    EI / TS + diverse batch
-};
-
-\node[box, text width=3.0cm] (skip) at (14.9,-6.4) {
-    \textbf{Joint Screening}\\
-    GP + predictor skip rule
-};
-
-\node[box, text width=3.0cm] (abc) at (11.2,-6.4) {
-    \textbf{Exact ABC Evaluation}\\
-    selected sequences
-};
-
-\node[box, text width=3.8cm] (update) at (6.3,-6.4) {
-    \textbf{State Update}\\
-    $\mathcal{D}$, $\mathbf{x}^{+}$, elite pool,\\
-    trust region, GP hyperparameters
-};
-
-\node[box, text width=2.8cm] (out) at (8.0,-9.0) {
-    \textbf{Output}\\
-    best sequence $\mathbf{x}^{+}$
-};
-
-% ===================== Main arrows =====================
-\draw[line] (eval0.south) -| (gp.north);
-\draw[line] (gp.east) -- (cand.west);
-\draw[line] (cand.east) -- (prune.west);
-\draw[line] (prune.east) -- (acq.west);
-\draw[line] (acq.south) -- (skip.north);
-\draw[line] (skip.west) -- (abc.east);
-\draw[line] (abc.west) -- (update.east);
-\draw[line] (update.south) -- (out.north);
-
-% feedback loop
-\draw[line] (update.west) -- ++(-2.6,0) -| (gp.south);
-
-% ===================== Predictor-related arrows =====================
-\draw[dashline] (pred.north) -| (init.south);
-\draw[dashline] (pred.south) -| (prune.north);
-\draw[dashline] (pred.south) -| (skip.north);
-\draw[dashline] (pred.west) -- (pseudo.east);
-\draw[line] (pseudo.south) -| (gp.north);
-
-\end{tikzpicture}
-\caption{Framework of the proposed Bayesian optimization method for synthesis sequence search. The auxiliary neural predictor supports initialization, candidate pruning, joint screening, and GP warm start, while the GP with CC-SSK serves as the main probabilistic model for acquisition-driven search.}
-\label{fig:framework}
-\end{figure*}
-
 Algo.~\ref{alg:main} outlines the proposed BO framework for synthesis sequence search. The optimization target is a scalar QoR objective, which may correspond to delay, area, or ADP.
 The algorithm first performs predictor-guided initialization and GP warm start (Lines~2--8). 
 In each iteration, it fits the GP surrogate (Line~11), generates candidate sequences and prunes clearly poor ones using the auxiliary predictor (Lines~13--14), and then computes acquisition scores to select a diverse batch (Lines~16--18). 
@@ -595,9 +474,9 @@ where $K$ denotes the maximum sequence length.
 Name & Sequence \\
 \midrule
 \texttt{resyn}~\cite{brayton2010abc}
-  & \texttt{b; rw; rw -z; b; rw -z; b} \\
+  & \texttt{b*; rw*; rw -z; b; rw -z; b} \\
 \texttt{resyn2}~\cite{brayton2010abc}
-  & \texttt{b; rw; rf; b; rw; rw -z; b; rf -z; rw -z; b} \\
+  & \texttt{b; rw; rf*; b; rw; rw -z; b; rf -z; rw -z; b} \\
 \texttt{resyn2a}~\cite{brayton2010abc}
   & \texttt{b; rw; rf; b; rw -z; b; rf -z; rw -z; b} \\
 \texttt{rwsat}~\cite{brayton2010abc}
@@ -615,7 +494,7 @@ dch chain I
 dch chain II
   & \texttt{dch -x; b; dch -x -f; b} \\
 area-mix
-  & \texttt{rw; rw -z; rf; rf -z; rs; rs -z; b} \\
+  & \texttt{rw; rw -z; rf; rf -z; rs*; rs -z; b} \\
 lossless
   & \texttt{b; rw -l; rf -l; rs -l; b} \\
 resub-wide
@@ -626,6 +505,9 @@ drw chain
   & \texttt{drf; drw; drwsat; b} \\
 \bottomrule
 \end{tabular}
+
+\vspace{1pt}
+\raggedright\scriptsize{\textit{*} \texttt{b-balance; rw-rewrite; rf-refactor; rs-resub}}
 \end{table}
 \subsection{LSTM-Enhanced SSK Kernel}
 To model the similarity between synthesis sequences, we build a Gaussian process model using the sub-sequence string kernel (SSK). 
@@ -672,7 +554,7 @@ Moreover, the bandwidth $\sigma_c$ is automatically initialized using the median
 
 Although Bayesian optimization improves the sample efficiency of synthesis sequence search, each selected candidate still requires invoking ABC for exact evaluation, which remains the dominant computational bottleneck. 
 To further reduce the number of expensive tool calls, we integrate an \emph{auxiliary neural predictor} into the optimization loop. 
-The architectural details and training procedure of this predictor are presented in a later section. The auxiliary neural predictor is integrated into the optimization process in three ways. 
+The architectural details and training procedure of this predictor are presented in a earlier section. The auxiliary neural predictor is integrated into the optimization process in three ways. 
 
 \underline{\textbf{Firstly}}, it is used for \emph{candidate pruning}. 
 After the trust-region, evolutionary, and random strategies generate a large candidate pool, the predictor provides fast quality estimates for all candidates in batch mode. 
@@ -723,7 +605,7 @@ A diverse batch is then greedily selected according to the acquisition scores, a
 
 \subsection{Experimental Setup}
 
-The experiments are conducted on 65 circuits drawn from EPFL, ABCD, and VTR benchmarks. We compare the proposed method with three representative open-source sequence-search frameworks, including LOFMPL, BOiLS, and FlowTune. All experiments are performed on a server equipped with an Intel(R) Xeon(R) Gold 6148 CPU @ 2.40\,GHz, an NVIDIA GeForce RTX 4090 GPU, and 500\,GB of memory. For logic synthesis and technology mapping, the ASAP 7\,nm library is adopted as the target technology library.
+The experiments are conducted on 60 circuits drawn from EPFL, ABCD, and VTR benchmarks. We compare the proposed method with three representative open-source sequence-search frameworks, including LOFMPL, BOiLS, and FlowTune. All experiments are performed on a server equipped with an Intel(R) Xeon(R) Gold 6148 CPU @ 2.40\,GHz, an NVIDIA GeForce RTX 4090 GPU, and 500\,GB of memory. For logic synthesis and technology mapping, the ASAP 7\,nm library is adopted as the target technology library.
 
 To ensure a fair comparison, all search frameworks are evaluated under the same computational budget. Specifically, the maximum number of search iterations is set to 200, and the runtime is limited to 100{,}000 seconds for each benchmark. If a framework exceeds the time limit, the best result obtained before timeout is reported as the final result.
 
@@ -791,8 +673,19 @@ combinational circuits. This confirms the effectiveness of the proposed
 predictor across different circuit types.
 
 \subsection{Sequence Optimization Results}
-
-Table~\ref{tab:seq_results} summarizes the circuit-wise sequence optimization results on 60 benchmarks. Overall, the proposed method achieves the best ADP on 50 out of 60 circuits, showing a clear advantage in final QoR. The final ADPs of FlowTune, BOiLS, and LOFMP are on average 34.0\%, 14.0\%, and 10.5\% worse than those of the proposed method. This improvement is consistent with the design of our framework. First, the hybrid action space with macro actions exposes stronger multi-step optimization patterns than primitive-only search, which helps the optimizer explore higher-quality regions of the sequence space. Second, the LSTM-enhanced SSK kernel improves the GP surrogate by capturing not only symbolic subsequence overlap but also latent semantic similarity between synthesis sequences. Third, the auxiliary predictor provides area--delay-aware guidance during initialization and candidate filtering, which helps the search process focus on candidates with better overall QoR rather than favoring only one objective.
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\linewidth]{SHEET2.png}
+    \caption{Circuit-wise normalized ADP comparison.}
+    \label{fig:adp_curve}
+\end{figure*}
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\linewidth]{SHEET3.png}
+    \caption{Circuit-wise runtime comparison.}
+    \label{fig:runtime_curve}
+\end{figure*}
+Figs.~\ref{fig:adp_curve} and~\ref{fig:runtime_curve} summarize the circuit-wise sequence optimization results on 60 benchmarks. Overall, the proposed method achieves the best ADP on 50 out of 60 circuits, showing a clear advantage in final QoR. As shown in Fig.~\ref{fig:adp_curve}, the ADP values are normalized to FlowTune. On average, compared with the proposed method, the final ADPs of FlowTune, BOiLS, and LOFMPL are 30.4\%, 13.8\%, and 8.5\% higher. This improvement is consistent with the design of our framework. First, the hybrid action space with macro actions exposes stronger multi-step optimization patterns than primitive-only search, which helps the optimizer explore higher-quality regions of the sequence space. Second, the LSTM-enhanced SSK kernel improves the GP surrogate by capturing not only symbolic subsequence overlap but also latent semantic similarity between synthesis sequences. Third, the auxiliary predictor provides area--delay-aware guidance during initialization and candidate filtering, which helps the search process focus on candidates with better overall QoR rather than favoring only one objective.
 
 In addition to better ADP, the proposed method also achieves substantially lower runtime. Its average runtime is only 2140\,s, compared with FlowTune, BOiLS, and LOFMPL, corresponding to runtime reductions of 94.0\%, 97.9\%, and 94.0\%. Moreover, the proposed method does not hit the time limit on any benchmark, whereas FlowTune, BOiLS, and LOFMPL time out on 11, 60, and 6 circuits, respectively. This efficiency gain mainly comes from the predictor-enhanced search strategy. Instead of relying solely on expensive exact ABC evaluations, the proposed framework uses the auxiliary predictor for predictor-guided initialization, large-scale candidate pruning, and joint screening before exact evaluation, thereby filtering out clearly unpromising sequences early. As a result, the Bayesian optimization loop can concentrate its evaluation budget on more promising candidates, significantly reducing unnecessary oracle calls and leading to much faster convergence in practice.
 
@@ -833,20 +726,8 @@ In general, the ablation results show that the three components contribute in di
 
 % ============================================================
 \section{Conclusion}
-\label{sec:conclusion}
 
-We presented BOiLS-Extended, a surrogate-accelerated Bayesian
-optimization framework for logic synthesis sequence search.
-The neural surrogate, evaluated on a within-circuit 80/20 split,
-achieves $\rho_s{=}0.951$ Spearman correlation and $0.93$ top-10\%
-recall, enabling $3\times$--$10\times$ per-circuit speedup over
-BOiLS~(mean~$5.8\times$).
-The CC-SSK kernel, proved PSD via the Schur product theorem, and the
-five complementary algorithmic modules further improve final QoR.
-All results are reported with five seeds and Wilcoxon significance
-tests.
-Future directions include online surrogate adaptation, cross-circuit
-transfer learning, and extension to full-flow PPA co-optimization.
+In this paper, we propose a predictor-enhanced Bayesian optimization framework for logic synthesis sequence search. The proposed method combines an AIG-derived unified circuit representation, a hybrid action space with macro actions and \textsc{nop}-based variable-length encoding, a multi-task predictor for joint area and delay estimation, and an LSTM-enhanced SSK kernel for discrete surrogate modeling. By tightly integrating the predictor into the optimization loop for warm-start initialization, candidate pruning, and evaluation skipping, the framework improves both search quality and efficiency while reducing expensive exact evaluations. Experimental results on EPFL, OpenABC-D, and VTR benchmarks show that the proposed method achieves the best ADP on 50 out of 60 circuits, reduces the final ADP by 30.4\%, 13.8\%, and 8.5\% compared with FlowTune, BOiLS, and LOFMPL, and delivers more than 15$\times$ speedup.
 
 
 \bibliographystyle{IEEEtran}
