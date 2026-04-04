@@ -154,6 +154,7 @@ model capture shared yet task-relevant interactions.
 % ============================================================
 
 \section{MTL-based QoR Predictor}
+\label{mtl}
 
 \subsection{Feature Encoding}
 
@@ -391,7 +392,7 @@ The key components of this framework are detailed in the following subsections.
 \WHILE{$|\mathcal{D}| < T$}
 
     \STATE \texttt{// Gaussian process fitting}
-    \STATE $\theta \gets \textsc{FitGaussianProcess}(\mathcal{D} \cup \tilde{\mathcal{D}}, k_{\mathrm{CC\mbox{-}SSK}})$
+    \STATE $\theta \gets \textsc{FitGaussianProcess}(\mathcal{D} \cup \tilde{\mathcal{D}}, k_{\mathrm{LSTM\mbox{-}SSK}})$
 
     \STATE \texttt{// Candidate generation and pruning}
     \STATE $\mathcal{C} \gets \textsc{GenerateCandidatePool}(\mathcal{T}, \mathcal{E}, \mathcal{A} \cup \{\textsc{nop}\})$
@@ -518,7 +519,7 @@ drw chain
 \raggedright\scriptsize{\textit{*} \texttt{b-balance; rw-rewrite; rf-refactor; rs-resub}}
 \end{table}
 \subsection{LSTM-Enhanced SSK}
-To model the similarity between synthesis sequences, we build a Gaussian process model using the SSK. 
+To model the similarity between synthesis sequences, we build a GP model using the SSK. 
 For two sequences $\mathbf{x}$ and $\mathbf{x}'$, the SSK measures their similarity through shared ordered sub-sequences, and is therefore well suited for discrete command-sequence optimization. 
 However, pure SSK only captures explicit symbolic overlap in the command space and cannot fully reflect the latent semantic similarity between sequences that may exhibit similar optimization behaviors but differ syntactically.
 
@@ -543,7 +544,7 @@ Based on the embedding distance, we define an embedding similarity $C(\mathbf{x}
 where $\sigma_c$ is a bandwidth parameter controlling the sensitivity of the embedding-based similarity. 
 We then combine this term with the original SSK to obtain the final kernel:
 \begin{equation}
-  k_{\mathrm{CC\mbox{-}SSK}}(\mathbf{x}_i,\mathbf{x}_j)
+  k_{\mathrm{LSTM\mbox{-}SSK}}(\mathbf{x}_i,\mathbf{x}_j)
   =
   k_{\mathrm{SSK}}(\mathbf{x}_i,\mathbf{x}_j)
   \Big[
@@ -560,22 +561,22 @@ Moreover, the bandwidth $\sigma_c$ is automatically initialized using the median
 
 \subsection{Auxiliary Predictor Integration}
 
-Although Bayesian optimization improves the sample efficiency of synthesis sequence search, each selected candidate still requires invoking ABC for exact evaluation, which remains the dominant computational bottleneck. 
+Although BO improves the sample efficiency of synthesis sequence search, each selected candidate still requires invoking ABC for exact evaluation, which remains the dominant computational bottleneck. 
 To further reduce the number of expensive tool calls, we integrate an \emph{auxiliary predictor} into the optimization loop. 
-The architectural details and training procedure of this predictor are presented in an earlier section. The auxiliary predictor is integrated into the optimization process in three ways. 
+The architectural details and training procedure of this predictor are presented in section \ref{mtl}. The auxiliary predictor is integrated into the optimization process in three ways. 
 
 \underline{\textbf{Firstly}}, it is used for \emph{candidate pruning}. 
 After the trust-region, evolutionary, and random strategies generate a large candidate pool, the predictor provides fast quality estimates for all candidates in batch mode. 
-Candidates predicted to be clearly unpromising are filtered out before Gaussian-process-based acquisition scoring, thereby reducing the number of low-quality candidates entering the expensive optimization loop. \underline{\textbf{Secondly}}, it is used for \emph{evaluation skipping}. Even after acquisition-based ranking, not every top-ranked candidate is directly sent to ABC. Candidates predicted to be significantly worse than the current incumbent under a predefined tolerance are skipped, which further reduces unnecessary exact evaluations. \underline{\textbf{Thirdly}}, it is used for \emph{warm-start initialization}. Before the main Gaussian-process-guided search begins, the framework uses predictor-generated pseudo labels for a set of sampled sequences to provide the optimizer with a coarse approximation of the search landscape. 
-This warm-start strategy improves the stability of the early optimization stage and accelerates the convergence of Bayesian optimization.
+Candidates predicted to be clearly unpromising are filtered out before GP-based acquisition scoring, thereby reducing the number of low-quality candidates entering the expensive optimization loop. \underline{\textbf{Secondly}}, it is used for \emph{evaluation skipping}. Even after acquisition-based ranking, not every top-ranked candidate is directly sent to ABC. Candidates predicted to be significantly worse than the current incumbent under a predefined tolerance are skipped, which further reduces unnecessary exact evaluations. \underline{\textbf{Thirdly}}, it is used for \emph{warm-start initialization}. Before the main GP-guided search begins, the framework uses predictor-generated pseudo labels for a set of sampled sequences to provide the optimizer with a coarse approximation of the search landscape. 
+This warm-start strategy improves the stability of the early optimization stage and accelerates the convergence of BO.
 
-Overall, the auxiliary predictor does not replace the Gaussian process model, but complements it. 
-The Gaussian process remains the main probabilistic model for Bayesian optimization, while the auxiliary predictor serves as an acceleration and representation module that improves efficiency and robustness.
+Overall, the auxiliary predictor does not replace the GP model, but complements it. 
+The GP remains the main probabilistic model for BO, while the auxiliary predictor serves as an acceleration and representation module that improves efficiency and robustness.
 
 \subsection{GP and Acquisition Optimization}
 
 At each iteration, a GP surrogate is fitted on the current training set consisting of the exact observations and the predictor-generated pseudo observations. 
-The GP is built with the CC-SSK kernel defined in Eq.~\eqref{eq:ccssk}, while its hyperparameters are periodically updated by maximizing the marginal likelihood. 
+The GP is built with the LSTM-SSK defined in Eq.~\eqref{eq:ccssk}, while its hyperparameters are periodically updated by maximizing the marginal likelihood. 
 Given the fitted GP, the posterior mean $\mu(\mathbf{x})$ and variance $\sigma^2(\mathbf{x})$ of each candidate sequence $\mathbf{x}$ are computed in the standard manner.
 
 Based on the GP posterior, acquisition scores are assigned to the candidate sequences. 
