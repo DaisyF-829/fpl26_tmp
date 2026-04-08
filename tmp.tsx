@@ -46,9 +46,9 @@
 
 
 
-Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by logic structure, placement, and the architecture-constrained routing fabric. Existing methods either predict coarse routing proxies or operate at restricted design stages, leaving a gap in register-level arrival-time prediction on placed netlists.
-In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling sub-level inference.
-Implemented in VTR, PASTE achieves an endpoint-level prediction accuracy of 91.56\% and a CPD prediction accuracy of 91.27\% on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow improves $F_{\max}$ by 4.26\% on average over logic-only ABC retiming. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
+Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by the timing graph, the placement, and the architecture-constrained routing fabric. Existing methods either predict coarse routing proxies or operate at restricted design stages, leaving a gap in register-level arrival-time prediction on placed netlists.
+In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling sub-second inference.
+Implemented in VTR, PASTE achieves an endpoint-level prediction accuracy of 91.52\% and a CPD prediction accuracy of 91.72\% on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow achieves an average $F_{\max}$ improvement of 30.83\% over the unoptimized baseline, outperforming logic-only ABC retiming by 4.26\%. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
 
 \end{abstract}
 
@@ -170,7 +170,7 @@ The main contributions of this work are summarized as follows:
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.75\linewidth]{figure/framework (2).png}
+    \includegraphics[width=0.95\linewidth]{figure/framework.png}
     \caption{Mapping physical routing elements to RRG and the timing graph.}
     \label{fig:framework}
     \vspace{4pt}
@@ -653,16 +653,16 @@ same environment for fair comparison.
 \midrule
 
 \multirow{4}{*}{Placement}
-& seed
+& Seed
 & \{1, 2, 3, 4\} \\
 
-& inner\_num
+& Inner\_num
 & \{0.3, 0.5, 0.7, 0.9\} \\
 
-& fix\_pins
+& Fix\_pins
 & \{free, random\} \\
 
-& place\_algorithm
+& Place\_algorithm
 & \{criticality\_timing, slack\_timing\} \\
 
 \midrule
