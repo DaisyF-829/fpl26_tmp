@@ -16,7 +16,7 @@ MLP_upd 为 Linear(2d→2d)→ReLU→Linear(2d→d)。
 
 2.4 回归头: \\hat{y}_v = MLP_reg(h^{(L)})，MLP_reg 为 Linear(d→d/2)→ReLU→Linear(d/2→1)，
 输出为归一化到达时间。训练时节点 MSE 仅在 y_valid 上计算（见 data_loader / train.py），
-目标为 t_v/CPD。
+目标为 t_v/pl_max（与推理恢复 pred*pl_max 一致）。
 
 扩展（不在 2.4 节）: 另含全图 max-pooling + graph_head 回归 log(cpd/pl_max)（pl_max 为有效 PL 到达时间最大值），与节点损失加权求和（train.py）；推理时 CPD_hat = exp(pred)*pl_max。
 """
@@ -335,6 +335,122 @@ class HeteroTimingMPNNDelayProp(nn.Module):
             src, dst = ei[0], ei[1]
             for fuse in self.prop_fuses:
                 msg = h[src] * w  # [E, h]，broadcast
+                agg = scatter(msg, dst, dim=0, dim_size=h.size(0), reduce="max")
+                agg = torch.where(torch.isfinite(agg), agg, torch.zeros_like(agg))
+                h = fuse(h, agg)
+
+        node_pred = self.reg_head(h).squeeze(-1)
+        batch_vec = getattr(batch[NODE_KEY], "batch", None)
+        if batch_vec is None:
+            batch_vec = h.new_zeros(h.size(0), dtype=torch.long)
+        g = global_max_pool(h, batch_vec)
+        graph_pred = self.graph_head(g).squeeze(-1)
+        return node_pred, graph_pred
+
+
+class HeteroTimingMPNNDelayPropStage1Only(nn.Module):
+    """
+    消融：仅 HeteroTimingMPNNDelayProp 阶段1（num_layers 层 HeteroMPNNLayer），
+    不做 delay-weighted max 传播。
+    构造参数与 DelayProp 对齐；prop_steps 不参与结构，仅便于与完整模型共用训练脚本参数。
+    """
+
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 3, prop_steps: int = 9):
+        super().__init__()
+        _ = prop_steps  # 与 DelayProp 签名一致，消融中不使用
+        h = hidden_dim
+        self.node_enc = nn.Sequential(
+            nn.Linear(14, h),
+            nn.ReLU(inplace=True),
+            nn.Linear(h, h),
+        )
+        self.edge_encs = nn.ModuleDict(
+            {
+                str(k): nn.Sequential(
+                    nn.Linear(7, h),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(h, h),
+                )
+                for k in range(NUM_EDGE_TYPES)
+            }
+        )
+        self.layers = nn.ModuleList([HeteroMPNNLayer(h) for _ in range(num_layers)])
+        self.reg_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+        self.graph_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+
+    def forward(self, batch: HeteroData) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.node_enc(batch[NODE_KEY].x)
+        edge_embs: dict[int, torch.Tensor] = {}
+        for k in range(NUM_EDGE_TYPES):
+            rel = _rel(k)
+            edge_embs[k] = self.edge_encs[str(k)](batch[rel].edge_attr)
+        for layer in self.layers:
+            h = layer(h, batch, edge_embs)
+        node_pred = self.reg_head(h).squeeze(-1)
+        batch_vec = getattr(batch[NODE_KEY], "batch", None)
+        if batch_vec is None:
+            batch_vec = h.new_zeros(h.size(0), dtype=torch.long)
+        g = global_max_pool(h, batch_vec)
+        graph_pred = self.graph_head(g).squeeze(-1)
+        return node_pred, graph_pred
+
+
+class HeteroTimingMPNNDelayPropStage2Only(nn.Module):
+    """
+    消融：仅 HeteroTimingMPNNDelayProp 阶段2（delay-weighted max + prop_fuses），
+    无 HeteroMPNNLayer；节点表示仅来自 node_enc。
+    num_layers 不参与结构，与 DelayProp 签名对齐；有效深度由 prop_steps 决定。
+    """
+
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 3, prop_steps: int = 9):
+        super().__init__()
+        _ = num_layers  # 与 DelayProp 签名一致，消融中不使用
+        h = hidden_dim
+        self.node_enc = nn.Sequential(
+            nn.Linear(14, h),
+            nn.ReLU(inplace=True),
+            nn.Linear(h, h),
+        )
+        self.delay_gate = nn.Linear(7, 1)
+        self.prop_fuses = nn.ModuleList([_ResidualFuse(h) for _ in range(prop_steps)])
+        self.reg_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+        self.graph_head = nn.Sequential(
+            nn.Linear(h, max(h // 2, 1)),
+            nn.ReLU(inplace=True),
+            nn.Linear(max(h // 2, 1), 1),
+        )
+
+    def forward(self, batch: HeteroData) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.node_enc(batch[NODE_KEY].x)
+        ei = _combined_edge_index(batch)
+        if ei.numel() > 0:
+            all_eattr: list[torch.Tensor] = []
+            for k in range(NUM_EDGE_TYPES):
+                rel = _rel(k)
+                ea = batch[rel].edge_attr
+                if ea.size(0) > 0:
+                    all_eattr.append(ea)
+            if all_eattr:
+                combined_eattr = torch.cat(all_eattr, dim=0)
+                w = torch.sigmoid(self.delay_gate(combined_eattr))
+            else:
+                w = torch.ones(ei.size(1), 1, device=h.device)
+
+            src, dst = ei[0], ei[1]
+            for fuse in self.prop_fuses:
+                msg = h[src] * w
                 agg = scatter(msg, dst, dim=0, dim_size=h.size(0), reduce="max")
                 agg = torch.where(torch.isfinite(agg), agg, torch.zeros_like(agg))
                 h = fuse(h, agg)

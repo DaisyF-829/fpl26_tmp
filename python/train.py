@@ -1,5 +1,5 @@
 """
-训练 HeteroTimingMPNN：HeteroData（4 类边），MSE（tnode.y_valid 掩码），按验证集 Kendall τ 保存最优模型。
+训练 HeteroTimingMPNN：HeteroData（4 类边），节点 MSE 目标为 y_arrival=rt/pl_max（tnode.y_valid 掩码），按验证集 Kendall τ 保存最优模型。
 默认从 data_dir 按 npz 文件三路划分：先 test，再 val，其余 train（无重叠）。
 --val_dir：验证集改来自单独目录（忽略 val_frac）；--test_dir：测试集改来自单独目录（忽略 test_frac）。
 早停：至少 min_epochs（默认 100）轮；之后验证 tau 连续 patience（默认 20）轮未提升则停止。
@@ -22,7 +22,13 @@ from torch_geometric.loader import DataLoader
 from data_loader import load_timing_graph
 from gnn import HETERO_CONV_MODELS
 from metrics import compute_regression_metrics, format_metrics_line
-from model import HeteroTimingMPNN, HeteroTimingMPNNDelayProp, HeteroTimingMPNNMultiHop
+from model import (
+    HeteroTimingMPNN,
+    HeteroTimingMPNNDelayProp,
+    HeteroTimingMPNNDelayPropStage1Only,
+    HeteroTimingMPNNDelayPropStage2Only,
+    HeteroTimingMPNNMultiHop,
+)
 
 
 def _find_npz_files(root: Path) -> list[Path]:
@@ -231,7 +237,17 @@ def main() -> None:
         "--model_type",
         type=str,
         default="mpnn",
-        choices=("mpnn", "mpnn_mh", "mpnn_delayprop", "gcn", "gat", "sage", "gin"),
+        choices=(
+            "mpnn",
+            "mpnn_mh",
+            "mpnn_delayprop",
+            "mpnn_delayprop_s1",
+            "mpnn_delayprop_s2",
+            "gcn",
+            "gat",
+            "sage",
+            "gin",
+        ),
         help="骨干：mpnn=异构 MPNN；gcn/gat/sage/gin=gnn 中平凡异构卷积对照（HeteroConv+各 conv）",
     )
     ap.add_argument("--hidden", type=int, default=128)
@@ -336,6 +352,16 @@ def main() -> None:
     elif args.model_type == "mpnn_delayprop":
         model = HeteroTimingMPNNDelayProp(hidden_dim=args.hidden, num_layers=args.layers).to(device)
         model_class_name = "HeteroTimingMPNNDelayProp"
+    elif args.model_type == "mpnn_delayprop_s1":
+        model = HeteroTimingMPNNDelayPropStage1Only(
+            hidden_dim=args.hidden, num_layers=args.layers
+        ).to(device)
+        model_class_name = "HeteroTimingMPNNDelayPropStage1Only"
+    elif args.model_type == "mpnn_delayprop_s2":
+        model = HeteroTimingMPNNDelayPropStage2Only(
+            hidden_dim=args.hidden, num_layers=args.layers
+        ).to(device)
+        model_class_name = "HeteroTimingMPNNDelayPropStage2Only"
     else:
         model = HeteroTimingMPNN(hidden_dim=args.hidden, num_layers=args.layers).to(device)
         model_class_name = "HeteroTimingMPNN"
@@ -399,7 +425,7 @@ def main() -> None:
             flush=True,
         )
 
-    print("\n======== 最优模型 · 各划分节点级指标（归一化到达时间）========", flush=True)
+    print("\n======== 最优模型 · 各划分节点级指标（归一化到达时间 rt/pl_max）========", flush=True)
     train_metrics = eval_epoch(model, train_loader, device)
     print(f"[Train] {format_metrics_line(train_metrics)}", flush=True)
     val_metrics = eval_epoch(model, val_loader, device)

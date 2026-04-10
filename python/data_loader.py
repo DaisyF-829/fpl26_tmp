@@ -3,8 +3,8 @@
 
 - 保留 npz 中全部 N 个 tnode，节点下标与 npz 一致（便于 evaluate 对齐）。
 - 4 种 tedge_type 拆成 4 类异构边 (tnode, e{k}, tnode)，边特征 8 维（无 etype one-hot）。
-- y_valid = tnode_valid_mask & (tnode_rt_time 有限且 >= 0)；y_arrival = rt_time/cpd（无效为 0）。
-- pl_max：有效 tnode_pl_time 的最大值（图头监督 log(cpd/pl_max)；无有效 PL 时取 cpd）。
+- y_valid = tnode_valid_mask & (tnode_rt_time 有限且 >= 0)；y_arrival = rt_time/pl_max（无效为 0；pl_max 定义见下）。
+- pl_max：掩码有效且 tnode_pl_time 有限、>=0 时的最大值（图头监督 log(cpd/pl_max)；无此类点时取 cpd）。
 - 路径分析可用 hetero_combined_edges(data) 将 e0→e3 边与 delay 拼成一张同构图（不参与 batch 默认 collate）。
 """
 
@@ -91,10 +91,11 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     else:
         pl_valid = np.asarray(pl_raw).astype(np.float32).reshape(-1)[:N]
 
-    # 有效 PL 到达时间 pl_time 的最大值；图头监督 log(cpd/pl_max)，推理时 CPD_hat = exp(pred)*pl_max
-    pl_mask = pl_valid > 0
-    if pl_mask.any():
-        pl_max = float(np.max(pl_time[pl_mask]))
+    # 有效 PL：掩码为真且 pl_time 有限、非负（避免 nan/-1 等污染 pl_max 与特征）
+    pl_ok = (pl_valid > 0) & np.isfinite(pl_time) & (pl_time >= 0.0)
+    # 有效 PL 到达时间的最大值；图头监督 log(cpd/pl_max)；无有效 PL 时退化为 cpd
+    if pl_ok.any():
+        pl_max = float(np.max(pl_time[pl_ok]))
     else:
         pl_max = float(cpd)
     if pl_max <= 0 or not np.isfinite(pl_max):
@@ -114,7 +115,7 @@ def load_timing_graph(npz_path: str) -> HeteroData:
         max_level = 1.0
     topo_norm = np.where(valid_topo, topo / max_level, 0.0).astype(np.float32)
 
-    pl_feat = np.where(pl_valid > 0, pl_time / cpd, 0.0).astype(np.float32)
+    pl_feat = np.where(pl_ok, pl_time / cpd, 0.0).astype(np.float32)
 
     x_coord = np.where(tnode_x >= 0, tnode_x / float(gw_denom), -0.05).astype(np.float32)
     y_coord = np.where(tnode_y >= 0, tnode_y / float(gh_denom), -0.05).astype(np.float32)
@@ -152,7 +153,7 @@ def load_timing_graph(npz_path: str) -> HeteroData:
 
     rt_time = arr("tnode_rt_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:N]
     y_valid_np = node_vm & np.isfinite(rt_time) & (rt_time >= 0.0)
-    y_arrival = np.where(y_valid_np, rt_time / cpd, 0.0).astype(np.float32)
+    y_arrival = np.where(y_valid_np, rt_time / float(pl_max), 0.0).astype(np.float32)
 
     tedge_src = arr("tedge_src")
     tedge_dst = arr("tedge_dst")
