@@ -46,9 +46,11 @@
 
 
 
-Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by the timing graph, the placement, and the architecture-constrained routing fabric. Existing methods either predict coarse routing proxies or operate at restricted design stages, leaving a gap in register-level arrival-time prediction on placed netlists.
-In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph (RRG). Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation with a shared scalar gate to model the long-range max-plus accumulation underlying static timing analysis. Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling sub-second inference.
-Implemented in VTR, PASTE achieves an endpoint-level prediction accuracy of 91.52\% and a CPD prediction accuracy of 91.72\% on the test set. As a downstream validation, integrating PASTE into a predictor-guided retiming flow achieves an average $F_{\max}$ improvement of 30.83\% over the unoptimized baseline, outperforming logic-only ABC retiming by 4.26\%. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
+Accurate pre-routing timing estimation is a fundamental challenge in FPGA design, since the final path delay is jointly determined by the timing graph, the placement, and the architecture-constrained routing fabric. Existing methods target only course-grained proxies, rather than fine-grained node-level arrival-time prediction.
+In this paper, we present PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE constructs physically informative features on the post-placement timing graph, including placement geometry, a post-placement timing prior, and routing-density signals derived from a design-aware pruned routing resource graph. Building on these features, we propose the Timing Propagation Network (TPN), a two-stage graph neural network that jointly predicts node-level arrival times and critical path delay. The first stage uses heterogeneous message passing to learn local multi-type timing dependencies, while the second stage performs delay-weighted max propagation to model the long-range max-plus accumulation underlying static timing analysis. 
+Both stages operate directly on the timing graph without explicit per-net routing-aware modeling, enabling sub-second inference.
+Implemented in VTR, PASTE achieves a node-level prediction accuracy of 91.52\% and a graph-level CPD prediction accuracy of 91.72\% under the circuit-level setting on the test set.
+As a downstream validation, integrating PASTE into a predictor-guided retiming flow achieves an average $F_{\max}$ improvement of 30.83\% over the unoptimized baseline, outperforming logic-only ABC retiming by 4.26\%. These results demonstrate that PASTE serves as an effective timing surrogate for early-stage timing analysis and timing-driven FPGA optimization.
 
 \end{abstract}
 
@@ -115,8 +117,8 @@ end-to-end arrival-time objective.
 \cite{fpga_ml_delay} & FPGA & Net-level & \XSolidBrush & Net delay \\
 \cite{air} & FPGA & Net-level & \XSolidBrush & Routing cost \\
 \cite{timinggcn,letime,gattiming,preroutegnn} & ASIC & Cell-level & \CheckmarkBold & \textbf{Arrival time} \\
-\cite{dai2025rrg_gae} & FPGA & Register-level & \CheckmarkBold & \textbf{Arrival time} \\
-Ours & FPGA & Register-level & \CheckmarkBold & \textbf{Arrival time} \\
+\cite{dai2025rrg_gae} & FPGA & Node-level & \CheckmarkBold & \textbf{Arrival time} \\
+Ours & FPGA & Node-level & \CheckmarkBold & \textbf{Arrival time} \\
 \bottomrule
 \end{tabular}%
 }
@@ -136,14 +138,14 @@ Network} (TPN), a two-stage architecture that combines heterogeneous
 local message passing with delay-weighted max propagation, explicitly
 reflecting the max-plus computation underlying static timing analysis.
 In this way, the proposed framework achieves accurate and scalable
-register-level arrival-time prediction on large FPGA designs, and can
+node-level arrival-time prediction on large FPGA designs, and can
 serve as an effective timing surrogate for downstream applications such
 as physical-aware retiming.
 
 The main contributions of this work are summarized as follows:
 \begin{itemize}
     \item We formulate FPGA pre-routing timing prediction as a
-    register-level arrival-time estimation problem on the
+    node-level arrival-time estimation problem on the
     post-placement timing graph, and construct FPGA-specific physically
     informative node and edge features, including a post-placement
     timing prior and routing-density signals derived from a
@@ -171,7 +173,7 @@ The main contributions of this work are summarized as follows:
 \begin{figure}[t]
     \centering
     \includegraphics[width=0.95\linewidth]{figure/framework.png}
-    \caption{Mapping physical routing elements to RRG and the timing graph.}
+    \caption{Overview of the proposed PASTE framework, including physical-aware feature construction and timing prediction on the post-placement timing graph.}
     \label{fig:framework}
     \vspace{4pt}
 \end{figure}
@@ -190,7 +192,7 @@ The second category predicts delay for specific targets. Hu \emph{et al.}~\cite{
 
 The third category uses heuristic routing-cost estimation in FPGA CAD tools. For example, VTR uses architecture-aware routing lookahead to estimate delay and congestion during maze routing~\cite{air,vtr9}. These estimates are designed to guide routing search rather than to serve as accurate timing surrogates for node-level arrival-time prediction or critical-path analysis. Moreover, their congestion estimates are heuristic and do not directly model the actual timing variation introduced by final routing choices.
 
-Overall, existing FPGA methods either predict coarse proxies, address restricted delay subproblems, or provide routing heuristics. They do not provide general register-level timing prediction on placed netlists, which limits their ability to identify critical paths before detailed routing.
+Overall, existing FPGA methods either predict coarse proxies, address restricted delay subproblems, or provide routing heuristics. They do not provide general node-level timing prediction on placed netlists, which limits their ability to identify critical paths before detailed routing.
 
 \subsection{GNN-Based Timing Prediction}
 
@@ -480,13 +482,35 @@ features are projected by relation-specific edge MLPs:
 \mathbf{e}_{uv}^{(k)}=\mathrm{MLP}_{\mathrm{edge}}^{(k)}(\mathbf{a}_{uv}^{(k)}),
 \end{equation}
 where \(\mathrm{MLP}_{\mathrm{edge}}^{(k)}\) has independent parameters for
-each edge type \(k\). The encoded node and edge features are then
-processed by \(L\) heterogeneous message-passing layers with sum
-aggregation, which captures the combined contributions of multiple local
-predecessors. The resulting node representations are denoted by
-\(\tilde{\mathbf{h}}_v^{(0)}\). In contrast, Stage II uses max
-aggregation to model the worst-predecessor behavior in timing
-propagation.
+each edge type \(k\). 
+The encoded node and edge features are then processed by
+$L$ heterogeneous message-passing layers. For layer
+$l=1,\dots,L$, the aggregated message for node $v$ from
+edge type $k$ is computed as
+\begin{equation}
+\mathbf{m}_v^{(k,l)}
+=
+\max_{u\in\mathcal{N}_k(v)}
+\mathrm{MSG}^{(k,l)}\!\left(\mathbf{h}_u^{(l-1)},\,\mathbf{e}_{uv}^{(k)}\right),
+\label{eq:stage1_msg}
+\end{equation}
+and the node representation is updated as
+\begin{equation}
+\mathbf{h}_v^{(l)}
+=
+\mathrm{MLP}_{\mathrm{upd}}^{(l)}
+\!\left(
+\mathbf{h}_v^{(l-1)}
++\sum_{k}\mathbf{m}_v^{(k,l)}
+\right),
+\label{eq:stage1_upd}
+\end{equation}
+where $\mathcal{N}_k(v)$ denotes the predecessors of $v$
+connected by edge type $k$, and $\mathrm{MSG}^{(k,l)}$ is
+a relation-specific message function with independent
+parameters per type. Max aggregation within each edge type
+captures the dominant predecessor along each timing-arc
+category, consistent with the max-plus semantics of STA.
 
 The second stage performs delay-weighted max propagation to model
 long-range timing dependency. Its input consists of the node
@@ -823,11 +847,10 @@ Test set average  & 0.85 & 13.52 & 0.90 & 0.86 & 12.96 & 0.89 & 0.86 & 13.74 & 0
 }
 \end{table*}
 
-
 \begin{table}[t]
 \centering
 \scriptsize
-\caption{Comparison of Top-10 overlap and MAPE under different evaluation settings. }
+\caption{Comparison of Top-10 overlap and CPD MAPE under different evaluation settings, including generic GNN baselines and ablated variants of the proposed model.}
 \label{tab:overlap_mape}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.10}
@@ -844,24 +867,27 @@ GCN       & 0.47 & 0.49 & 0.48 & 12.04 & 15.78 & 16.98 \\
 GIN       & 0.45 & 0.52 & 0.55 & 42.85 & 38.78 & 45.32 \\
 GraphSAGE & 0.52 & 0.59 & 0.54 & 20.27 & 19.44 & 18.35 \\
 GAT       & 0.49 & 0.52 & 0.54 & 12.47 & 13.47 & 15.56 \\
-Ours      & 0.58 & 0.68 & 0.60 &  8.28 &  7.55 &  8.39 \\
+\midrule
+w/o Stage II & 0.53 & 0.64 & 0.54 & 17.88 & 16.15 & 17.14 \\
+w/o Stage I  & 0.57 & \textbf{0.70} & \textbf{0.60} & 40.16 & 39.58 & 40.62 \\
+\midrule
+Ours      & \textbf{0.58} & 0.68 & \textbf{0.60} & \textbf{8.28} & \textbf{7.55} & \textbf{8.39} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-
 \subsection{Results and Analysis}
-
 Table~\ref{tab:main_results} reports the comparison with four generic
 GNN baselines under circuit-level, cross-architecture, and
 cross-channel-width evaluation settings. Overall, the proposed model
 achieves the best average performance under the circuit-level setting,
 with \(R^2=0.89\), MAPE \(=8.48\), and
 Spearman's \(\rho=0.91\). Compared with the strongest generic baseline
-in this setting, the proposed model reduces MAPE substantially while
-also improving the ranking-based metrics, indicating that it provides
-more accurate endpoint arrival-time prediction and better preserves the
-relative ordering of timing-critical nodes.
+in this setting, the proposed model substantially reduces the node-level
+arrival-time prediction error while also improving the ranking-based
+metrics, indicating that it provides more accurate node-level arrival-time
+prediction and better preserves the relative ordering of timing-critical
+nodes.
 
 At the circuit level, the proposed model shows particularly clear
 advantages on several designs with relatively challenging timing
@@ -869,8 +895,8 @@ distributions, such as \textit{bgm}, \textit{mcml}, \textit{or1200},
 \textit{frisc}, and \textit{tseng}, where the MAPE is consistently
 lower than that of the generic GNN baselines. This suggests that the
 proposed propagation design is more effective at capturing long-range
-timing dependencies and endpoint-level criticality. At the same time,
-the proposed model is not uniformly best on every individual circuit,
+timing dependencies and timing criticality. At the same time, the
+proposed model is not uniformly best on every individual circuit,
 which indicates that different circuits may favor different inductive
 biases; however, its superior average results demonstrate better overall
 robustness across diverse designs.
@@ -886,21 +912,37 @@ Under the cross-channel-width setting, the proposed model again achieves
 the best MAPE and the best ranking metrics, but its \(R^2\) is lower
 than those of the generic GNN baselines. This suggests that when the
 routing-resource budget changes significantly, the proposed model still
-preserves the relative ordering of critical endpoints well, but the
+preserves the relative ordering of timing-critical nodes well, but the
 absolute calibration of predicted arrival times becomes more difficult.
-In other words, the model remains reliable for critical-node ranking,
-while its value regression is more sensitive to distribution shift in
-routing capacity.
+In other words, the model remains reliable for node ranking, while its
+value regression is more sensitive to distribution shift in routing
+capacity.
 
-Table~\ref{tab:overlap_mape} further compares Top-10 overlap and MAPE.
-The proposed model achieves the highest Top-10 overlap in all three
-settings, demonstrating that it is more effective at identifying the
-most timing-critical endpoints. In addition, it consistently attains the
-lowest MAPE across circuit-, architecture-, and channel-width-level
-evaluation. These results together show that the proposed model not only
-improves regression accuracy, but also better supports downstream timing
-analysis by preserving the ranking of critical endpoints.
+Table~\ref{tab:overlap_mape} further compares the endpoint-level
+Top-10 overlap and the graph-level CPD MAPE, and also includes two
+ablated variants of the proposed model. Among all generic GNN baselines,
+the proposed model achieves the highest Top-10 overlap in all three
+settings and consistently attains the lowest CPD MAPE, demonstrating
+its advantage in both critical-endpoint identification and graph-level
+delay estimation.
 
+In Table~\ref{tab:overlap_mape}, the variant without Stage I
+(\textit{w/o Stage I}) directly uses the raw node features as the input
+to Stage II, while the variant without Stage II (\textit{w/o Stage II})
+removes the delay-weighted max-propagation stage and directly applies
+the prediction heads after Stage I.
+
+The ablation results further verify the effectiveness of both stages.
+Removing Stage II consistently degrades both Top-10 overlap and CPD
+MAPE under all three settings, showing that this stage is important for
+long-range timing propagation. In contrast, removing Stage I causes an
+even larger degradation in CPD prediction, although the Top-10 overlap
+remains relatively competitive. This indicates that Stage I is mainly
+responsible for learning effective local heterogeneous timing
+representations, while Stage II further propagates critical timing
+information over long ranges. Overall, the two stages are complementary,
+and combining them yields the most balanced performance across different
+evaluation settings.
 
 \begin{table*}[t]
 \centering
@@ -936,8 +978,6 @@ tseng            & 2501  & 45  & 147.46 & 2501  & 45  & 139.82 & -5.18\% & 2506 
 \label{tab:retime}
 \vspace{2pt}
 \end{table*}
-
-
 
 
 \section{Application: Predictor-Guided Retiming}
@@ -1045,7 +1085,7 @@ FPGA pre-routing timing estimation remains challenging because final timing is j
 
 In this paper, we presented PASTE, a physical-aware surrogate for FPGA pre-routing timing estimation. PASTE operates on the post-placement timing graph through a heterogeneous GNN formulation, so that both timing dependencies and node types can be naturally modeled. To better capture routing-induced delay variation, we further introduced design-aware RRG pruning together with physically informative features, including node density and edge usage density. In addition, the proposed TPN adopts a two-stage propagation scheme: local heterogeneous message passing with sum aggregation, followed by long-range delay-weighted max propagation, which explicitly aligns with the max-plus semantics of static timing analysis.
 
-Experimental results show that PASTE achieves a circuit-level MAPE of 8.48\%, while requiring less than one second of inference time after placement. As a downstream application, PASTE-guided retiming improves $F_{\max}$ by 30.83\%, outperforming ABC retiming, which achieves 26.57\%.
+Experimental results show that PASTE achieves a node-level arrival-time MAPE of 8.48\% under the circuit-level setting, while requiring less than one second of inference time after placement. As a downstream application, PASTE-guided retiming improves $F_{\max}$ by 30.83\%, outperforming ABC retiming, which achieves 26.57\%.
 
 These results demonstrate that a physically informed learned surrogate can serve as an effective timing oracle in FPGA CAD flows, enabling timing-driven optimization before routing. Future work includes extending PASTE to multi-clock designs and integrating the predictor into placement refinement.
 
