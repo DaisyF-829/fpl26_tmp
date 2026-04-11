@@ -833,7 +833,7 @@ Test set average  & 0.85 & 13.52 & 0.90 & 0.86 & 12.96 & 0.89 & 0.86 & 13.74 & 0
 \begin{table}[t]
 \centering
 \scriptsize
-\caption{Comparison of Top-10 overlap and CPD MAPE under different evaluation settings, including generic GNN baselines and ablated variants of the proposed model.}
+\caption{Comparison of Top-10 overlap and CPD MAPE under different evaluation settings, including generic GNN baselines, RRG-GAE~\cite{dai2025rrg_gae}, and ablated variants of the proposed model.}
 \label{tab:overlap_mape}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.10}
@@ -892,41 +892,36 @@ compared methods. This result indicates that the learned timing
 representation transfers well across different FPGA architecture
 variants, rather than overfitting to a single resource organization.
 
-Under the cross-channel-width setting, the proposed model again achieves
-the best MAPE and the best ranking metrics, but its \(R^2\) is higher
-than those of the generic GNN baselines. This suggests that when the
-routing-resource budget changes significantly, the proposed model still
-preserves the relative ordering of timing-critical nodes well, but the
-absolute calibration of predicted arrival times becomes more difficult.
-In other words, the model remains reliable for node ranking, while its
-value regression is more sensitive to distribution shift in routing
-capacity.
+Under the cross-channel-width setting, the proposed model achieves the
+best results across all three metrics ($R^2=0.89$, MAPE$=10.01\%$,
+$\rho=0.91$). Notably, while the MAPE improvement over baselines
+remains substantial, the $R^2$ gap is
+narrower (0.89 vs.\ 0.85--0.86), suggesting that distribution shift
+in routing capacity has a larger effect on absolute regression quality
+than on relative ranking.
 
-Table~\ref{tab:overlap_mape} further compares the endpoint-level
-Top-10 overlap and the graph-level CPD MAPE, and also includes two
-ablated variants of the proposed model. Among all generic GNN baselines,
-the proposed model achieves the highest Top-10 overlap in all three
-settings and consistently attains the lowest CPD MAPE, demonstrating
-its advantage in both critical-endpoint identification and graph-level
-delay estimation.
+Table~\ref{tab:overlap_mape} further evaluates all methods on
+Top-10 overlap and CPD MAPE. In addition to the four generic GNN
+baselines, we include RRG-GAE~\cite{dai2025rrg_gae}. We also report two ablated
+variants: \textit{w/o Stage~I}, which directly feeds projected node
+features into Stage~II, and \textit{w/o Stage~II}, which removes the
+edge-gated max-propagation stage and applies prediction heads
+directly after Stage~I. 
 
-In Table~\ref{tab:overlap_mape}, the variant without Stage I
-(\textit{w/o Stage I}) directly uses the raw node features as the input
-to Stage II, while the variant without Stage II (\textit{w/o Stage II})
-removes the edge-gated max-propagation stage and directly applies
-the prediction heads after Stage I.
 
-The ablation results further verify the effectiveness of both stages.
-Removing Stage II consistently degrades both Top-10 overlap and CPD
-MAPE under all three settings, showing that this stage is important for
-long-range timing propagation. In contrast, removing Stage I causes an
-even larger degradation in CPD prediction, although the Top-10 overlap
-remains relatively competitive. This indicates that Stage I is mainly
-responsible for learning effective local heterogeneous timing
-representations, while Stage II further propagates critical timing
-information over long ranges. Overall, the two stages are complementary,
-and combining them yields the most balanced performance across different
-evaluation settings.
+Among all compared methods, the proposed model achieves the highest
+Top-10 overlap and the lowest CPD MAPE across all three settings.
+RRG-GAE achieves reasonable Top-10 overlap but substantially higher
+CPD MAPE, suggesting it is less effective at predicting absolute
+timing values at the graph level.
+Removing Stage~II consistently degrades both metrics, confirming
+that long-range max-plus propagation is essential. Removing Stage~I
+causes an even larger degradation in CPD MAPE while the Top-10
+overlap remains competitive, indicating that Stage~I is primarily
+responsible for learning accurate local timing representations
+whereas Stage~II propagates critical timing information over long
+ranges. The two stages are complementary, and combining them yields
+the best overall performance. 
 
 \begin{table*}[t]
 \centering
