@@ -91,7 +91,7 @@ Dai \emph{et al.}~\cite{dai2025rrg_gae} took an important step toward
 FPGA pre-routing arrival-time prediction. However, to incorporate
 routing-resource information, that framework performs explicit
 per-net routing-aware modeling over all nets in the design, leading to
-overhead that scales linearly with the number of mets. In addition, its routing-aware representation
+overhead that scales linearly with the number of nets. In addition, its routing-aware representation
 learning and timing prediction are not optimized jointly under a single
 end-to-end arrival-time objective.
 
@@ -443,7 +443,7 @@ also used as edge features.
 
 We propose a \emph{Timing Propagation Network} (TPN) for pre-routing
 timing estimation. It consists of
-a heterogeneous message-passing stage, a edge-gated propagation
+a heterogeneous message-passing stage, an edge-gated propagation
 stage, and two prediction heads for node-level and graph-level outputs.
 Let \(\mathcal{V}_{\mathrm{tg}}\) denote the set of timing nodes, and let
 \(\mathcal{E}_{\mathrm{tg}}^{(k)}\) denote the directed timing-edge set of
@@ -851,7 +851,6 @@ GIN       & 0.45 & 0.52 & 0.55 & 42.85 & 38.78 & 45.32 \\
 GraphSAGE & 0.52 & 0.59 & 0.54 & 20.27 & 19.44 & 18.35 \\
 GAT       & 0.49 & 0.52 & 0.54 & 12.47 & 13.47 & 15.56 \\
 RRG-GAE~\cite{dai2025rrg_gae}& 0.34& 0.51& 0.50& 31.77& 24.77&21.83\\
-Post-PL only & 0& 0& 0& & &\\
 \midrule
 w/o Stage II & 0.53 & 0.64 & 0.54 & 17.88 & 16.15 & 17.14 \\
 w/o Stage I  & 0.57 & 0.68& \textbf{0.60} & 40.16 & 39.58 & 40.62 \\
@@ -894,7 +893,7 @@ representation transfers well across different FPGA architecture
 variants, rather than overfitting to a single resource organization.
 
 Under the cross-channel-width setting, the proposed model again achieves
-the best MAPE and the best ranking metrics, but its \(R^2\) is lower
+the best MAPE and the best ranking metrics, but its \(R^2\) is higher
 than those of the generic GNN baselines. This suggests that when the
 routing-resource budget changes significantly, the proposed model still
 preserves the relative ordering of timing-critical nodes well, but the
