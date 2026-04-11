@@ -4,7 +4,7 @@
 - 保留 npz 中全部 N 个 tnode，节点下标与 npz 一致（便于 evaluate 对齐）。
 - 4 种 tedge_type 拆成 4 类异构边 (tnode, e{k}, tnode)，边特征 8 维（无 etype one-hot）。
 - y_valid = tnode_valid_mask & (tnode_rt_time 有限且 >= 0)；y_arrival = rt_time/pl_max（无效为 0；pl_max 定义见下）。
-- pl_max：掩码有效且 tnode_pl_time 有限、>=0 时的最大值（图头监督 log(cpd/pl_max)；无此类点时取 cpd）。
+- pl_max：掩码有效且 tnode_pl_arrival（无则 tnode_pl_time）有限、>=0 时的最大值（图头监督 log(cpd/pl_max)；无此类点时取 cpd）。
 - 路径分析可用 hetero_combined_edges(data) 将 e0→e3 边与 delay 拼成一张同构图（不参与 batch 默认 collate）。
 """
 
@@ -84,7 +84,10 @@ def load_timing_graph(npz_path: str) -> HeteroData:
     gh_denom = max(grid_h - 1, 1)
     grid_sum = float(grid_w + grid_h)
 
-    pl_time = arr("tnode_pl_time", np.full(N, -1.0, dtype=np.float32)).astype(np.float32).reshape(-1)[:N]
+    pl_arr = arr("tnode_pl_arrival", None)
+    if pl_arr is None:
+        pl_arr = arr("tnode_pl_time", np.full(N, -1.0, dtype=np.float32))
+    pl_time = np.asarray(pl_arr, dtype=np.float32).reshape(-1)[:N]
     pl_raw = arr("tnode_pl_arrival_mask", arr("tnode_pl_valid", None))
     if pl_raw is None:
         pl_valid = np.zeros(N, dtype=np.float32)

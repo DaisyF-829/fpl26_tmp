@@ -126,7 +126,7 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         pred, pred_graph = model(batch)
         mask = batch["tnode"].y_valid
-        # 图级 graph_head：回归 log(cpd / pl_max)，pl_max 为有效 tnode_pl_time 的最大值；恢复 CPD = exp(pred)*pl_max
+        # 图级 graph_head：回归 log(cpd / pl_max)，pl_max 为有效 tnode_pl_arrival（无则 pl_time）的最大值；恢复 CPD = exp(pred)*pl_max
         cpd = batch.cpd.detach().float().reshape(-1).clamp(min=1e-12)
         pl_max = getattr(batch, "pl_max", None)
         if pl_max is None:

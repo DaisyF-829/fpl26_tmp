@@ -13,7 +13,7 @@ set -euo pipefail
 # 期望记录的某次结果（示例值）：
 #   tau=0.9019 spearman=0.9851 r2=0.9715 mape=16.75%
 #
-# PL 基线（用 tnode_pl_time，图级 CPD = 全图最大 PL = pl_max）：
+# PL 基线（用 tnode_pl_arrival，无则 tnode_pl_time；图级 CPD = 全图最大 PL = pl_max）：
 #   脚本末尾会跑：python evaluate.py --pl_baseline --npz_dir "$DATA_DIR2" --quiet
 #   仅跑 PL、跳过各 model 评估：  SKIP_MODEL_EVAL=1 bash run_all_model_types_layers3.sh
 #   不跑 PL 段：                  RUN_PL_BASELINE=0 bash run_all_model_types_layers3.sh
@@ -271,7 +271,7 @@ else
   echo "SKIP_MODEL_EVAL=1：跳过各 model_type 的 evaluate。"
 fi
 
-# PL 基线：--pl_baseline（节点=PL 到达；图级 CPD=pl_max=全图最大 tnode_pl_time）
+# PL 基线：--pl_baseline（节点=PL 到达 tnode_pl_arrival；图级 CPD=pl_max=全图最大 PL）
 if [[ "$RUN_PL_BASELINE" == "1" ]]; then
 eval_log_pl="${RUN_DIR}/eval_pl_baseline_layers${LAYERS}_fpl.log"
 ckpt_pl="-"
